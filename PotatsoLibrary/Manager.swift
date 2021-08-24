@@ -13,7 +13,7 @@ import NetworkExtension
 import ICSMainFramework
 import MMWormhole
 import Alamofire
-import MMDB_Swift
+//import MMDB_Swift
 
 public enum ManagerError: Error {
     case invalidProvider
@@ -35,7 +35,7 @@ public let kProxyServiceVPNStatusNotification = "kProxyServiceVPNStatusNotificat
 
 open class Manager {
     
-    open static let shared = Manager()
+    public static let shared = Manager()
     
     open fileprivate(set) var vpnStatus = VPNStatus.off {
         didSet {
@@ -43,7 +43,7 @@ open class Manager {
         }
     }
     
-    open let wormhole = MMWormhole(applicationGroupIdentifier: sharedGroupIdentifier, optionalDirectory: "wormhole")
+    public let wormhole = MMWormhole(applicationGroupIdentifier: sharedGroupIdentifier, optionalDirectory: "wormhole")
 
     var observerAdded: Bool = false
     
@@ -136,45 +136,45 @@ open class Manager {
     }
 
     func copyGEOIPData() throws {
-        let toURL = Potatso.sharedUrl().appendingPathComponent("GeoLite2-Country.mmdb")
-
-        if !FileManager.default.fileExists(atPath: toURL.path) {
-            let maxminddbPath = Bundle(for: MMDB.self).path(forResource: "GeoLite2-Country", ofType: "mmdb") ?? ""
-            if FileManager.default.fileExists(atPath: maxminddbPath) {
-                try FileManager.default.copyItem(atPath: maxminddbPath, toPath: toURL.path)
-                return
-            }
-        }
-        
-            let MaxmindLastModifiedKey = "MaxmindLastModifiedKey"
-            let lastM = Potatso.sharedUserDefaults().string(forKey: MaxmindLastModifiedKey) ?? "Sun, 25 Jun 2017 00:07:41 GMT"
-            
-            let url = URL(string: "https://mumevpn.com/ios/GeoLite2-Country.mmdb")
-            let request = NSMutableURLRequest(url: url!)
-            request.setValue(lastM, forHTTPHeaderField: "If-Modified-Since")
-            let headers: HTTPHeaders = [
-                "If-Modified-Since": lastM,
-            ]
-            Alamofire.request(url!, headers: headers).response { response in
-                guard let data = response.data, let r = response.response else {
-                    print("Download GeoLite2-Country.mmdb error: empty data")
-                    return
-                }
-                if (r.statusCode == 200 && data.count > 1024) {
-                    let result = (try? data.write(to: toURL)) != nil
-                    if result {
-                        let thisM = r.allHeaderFields["Last-Modified"];
-                        if let m = thisM {
-                            Potatso.sharedUserDefaults().set(m, forKey: MaxmindLastModifiedKey)
-                        }
-                        print("writeToFile GeoLite2-Country.mmdb: OK")
-                    } else {
-                        print("writeToFile GeoLite2-Country.mmdb: failed")
-                    }
-                } else {
-                    print("Download GeoLite2-Country.mmdb no update maybe: " + (r.description))
-                }
-            }
+//        let toURL = Potatso.sharedUrl().appendingPathComponent("GeoLite2-Country.mmdb")
+//
+//        if !FileManager.default.fileExists(atPath: toURL.path) {
+//            let maxminddbPath = Bundle(for: MMDB.self).path(forResource: "GeoLite2-Country", ofType: "mmdb") ?? ""
+//            if FileManager.default.fileExists(atPath: maxminddbPath) {
+//                try FileManager.default.copyItem(atPath: maxminddbPath, toPath: toURL.path)
+//                return
+//            }
+//        }
+//
+//            let MaxmindLastModifiedKey = "MaxmindLastModifiedKey"
+//            let lastM = Potatso.sharedUserDefaults().string(forKey: MaxmindLastModifiedKey) ?? "Sun, 25 Jun 2017 00:07:41 GMT"
+//
+//            let url = URL(string: "https://mumevpn.com/ios/GeoLite2-Country.mmdb")
+//            let request = NSMutableURLRequest(url: url!)
+//            request.setValue(lastM, forHTTPHeaderField: "If-Modified-Since")
+//            let headers: HTTPHeaders = [
+//                "If-Modified-Since": lastM,
+//            ]
+//            Alamofire.request(url!, headers: headers).response { response in
+//                guard let data = response.data, let r = response.response else {
+//                    print("Download GeoLite2-Country.mmdb error: empty data")
+//                    return
+//                }
+//                if (r.statusCode == 200 && data.count > 1024) {
+//                    let result = (try? data.write(to: toURL)) != nil
+//                    if result {
+//                        let thisM = r.allHeaderFields["Last-Modified"];
+//                        if let m = thisM {
+//                            Potatso.sharedUserDefaults().set(m, forKey: MaxmindLastModifiedKey)
+//                        }
+//                        print("writeToFile GeoLite2-Country.mmdb: OK")
+//                    } else {
+//                        print("writeToFile GeoLite2-Country.mmdb: failed")
+//                    }
+//                } else {
+//                    print("Download GeoLite2-Country.mmdb no update maybe: " + (r.description))
+//                }
+//            }
     }
 
     func copyTemplateData() throws {
@@ -309,13 +309,13 @@ extension Manager {
         let logDir = rootUrl.appendingPathComponent("log").path
         var maxminddbPath = rootUrl.appendingPathComponent("GeoLite2-Country.mmdb").path
         if !FileManager.default.fileExists(atPath: maxminddbPath) {
-            maxminddbPath = Bundle(for: MMDB.self).path(forResource: "GeoLite2-Country", ofType: "mmdb") ?? ""
+            maxminddbPath = Bundle.main.path(forResource: "GeoLite2-Country", ofType: "mmdb") ?? ""
         }
         let userActionUrl = confDirUrl.appendingPathComponent("mume.action")
         let directDomainsUrl = confDirUrl.appendingPathComponent("mume.direct")
         for p in [confDirUrl.path, templateDirPath, temporaryDirPath, logDir] {
             if !FileManager.default.fileExists(atPath: p) {
-                _ = try? FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true, attributes: [FileAttributeKey.protectionKey.rawValue: FileProtectionType.none])
+                _ = try? FileManager.default.createDirectory(atPath: p, withIntermediateDirectories: true, attributes: [FileAttributeKey.protectionKey: FileProtectionType.none])
             }
         }
         

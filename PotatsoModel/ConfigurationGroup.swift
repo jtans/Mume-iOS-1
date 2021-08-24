@@ -38,12 +38,12 @@ open class ConfigurationGroup: BaseModel {
     open var proxies = List<Proxy>()
     open var ruleSets = List<RuleSet>()
     
-    open override static func indexedProperties() -> [String] {
+    public override static func indexedProperties() -> [String] {
         return ["name"]
     }
     
     open override func validate() throws {
-        guard name.characters.count > 0 else {
+        guard name.count > 0 else {
             throw ConfigurationGroupError.emptyName
         }
     }

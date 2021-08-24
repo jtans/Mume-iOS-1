@@ -48,7 +48,7 @@ open class BaseModel: Object {
     open dynamic var createAt = Date().timeIntervalSince1970
     open dynamic var updatedAt = Date().timeIntervalSince1970
 
-    override open static func primaryKey() -> String? {
+    override public static func primaryKey() -> String? {
         return "uuid"
     }
     

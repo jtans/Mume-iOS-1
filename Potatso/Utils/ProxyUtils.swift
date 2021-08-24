@@ -7,24 +7,24 @@
 //
 
 import Foundation
-import MMDB_Swift
+//import MMDB_Swift
 import ICSMainFramework
 
 class ProxyUtils {
-    static let mmdb = MMDB(Potatso.sharedUrl().appendingPathComponent("GeoLite2-Country.mmdb").path)
+//    static let mmdb = MMDB(Potatso.sharedUrl().appendingPathComponent("GeoLite2-Country.mmdb").path)
     static func country(ip: String) -> String {
-        if ip.characters.count >= 7,
-            let mmdb = self.mmdb,
-            let info = mmdb.lookup(ip) {
-            var lang = AppEnv.languageCode
-            let ipstr = (DataInitializer.serverConfigurations["ip"] != nil) ? ip : ""
-            if let name = info.names[lang] {
-                return info.isoCode.emojiFlag() + name + " " + ipstr
-            }
-            lang = lang + "-" + AppEnv.countryCode
-            let name = (info.names[lang] ?? info.isoCode) + " " + ipstr
-            return info.isoCode.emojiFlag() + name
-        }
+//        if ip.characters.count >= 7,
+//            let mmdb = self.mmdb,
+//            let info = mmdb.lookup(ip) {
+//            var lang = AppEnv.languageCode
+//            let ipstr = (DataInitializer.serverConfigurations["ip"] != nil) ? ip : ""
+//            if let name = info.names[lang] {
+//                return info.isoCode.emojiFlag() + name + " " + ipstr
+//            }
+//            lang = lang + "-" + AppEnv.countryCode
+//            let name = (info.names[lang] ?? info.isoCode) + " " + ipstr
+//            return info.isoCode.emojiFlag() + name
+//        }
         return ""
     }
     

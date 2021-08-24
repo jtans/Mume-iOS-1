@@ -79,10 +79,10 @@ open class Proxy: BaseModel {
     open dynamic var ssrObfs: String?
     open dynamic var ssrObfsParam: String?
 
-    open static let ssUriMethod = "ss"
-    open static let ssrUriMethod = "ssr"
+    public static let ssUriMethod = "ss"
+    public static let ssrUriMethod = "ssr"
 
-    open static let ssrSupportedProtocol = [
+    public static let ssrSupportedProtocol = [
         "origin",
         "verify_simple",
         "auth_simple",
@@ -90,14 +90,14 @@ open class Proxy: BaseModel {
         "auth_sha1_v2"
     ]
 
-    open static let ssrSupportedObfs = [
+    public static let ssrSupportedObfs = [
         "plain",
         "http_simple",
         "tls1.0_session_auth",
         "tls1.2_ticket_auth"
     ]
 
-    open static let ssSupportedEncryption = [
+    public static let ssSupportedEncryption = [
         "table",
         "rc4",
         "rc4-md5",
@@ -118,7 +118,7 @@ open class Proxy: BaseModel {
         "chacha20-ietf"
     ]
 
-    open override static func indexedProperties() -> [String] {
+    public override static func indexedProperties() -> [String] {
         return ["host","port"]
     }
 
@@ -126,7 +126,7 @@ open class Proxy: BaseModel {
         guard let _ = ProxyType(rawValue: typeRaw)else {
             throw ProxyError.invalidType
         }
-        guard host.characters.count > 0 else {
+        guard host.count > 0 else {
             throw ProxyError.invalidHost
         }
         guard port > 0 && port <= Int(UINT16_MAX) else {
@@ -238,7 +238,7 @@ extension Proxy {
     public convenience init(url rawUri: URL) throws {
         self.init()
         let s = rawUri.scheme?.lowercased() ?? (rawUri.user == nil ? "socks5" : "shadowsocks")
-            if let fragment = rawUri.fragment, fragment.characters.count == 36 {
+            if let fragment = rawUri.fragment, fragment.count == 36 {
                 self.uuid = fragment
             }
             
@@ -459,7 +459,7 @@ extension Proxy {
         let base64String = proxyString.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         let base64Charset = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
         if CharacterSet(charactersIn: base64String).isSubset(of: base64Charset) {
-            let padding = base64String.characters.count + (base64String.characters.count % 4 != 0 ? (4 - base64String.characters.count % 4) : 0)
+            let padding = base64String.count + (base64String.count % 4 != 0 ? (4 - base64String.count % 4) : 0)
             if let decodedData = Data(base64Encoded: base64String.padding(toLength: padding, withPad: "=", startingAt: 0), options: NSData.Base64DecodingOptions(rawValue: 0)), let decodedString = NSString(data: decodedData, encoding: String.Encoding.utf8.rawValue) {
                 return decodedString as String
             }

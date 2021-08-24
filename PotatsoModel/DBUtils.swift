@@ -20,17 +20,17 @@ open class DBUtils {
         return mRealm!
     }
 
-    open static func add(_ object: BaseModel, update: Bool = true, setModified: Bool = true, inRealm realm: Realm? = nil) throws {
+    public static func add(_ object: BaseModel, update: Bool = true, setModified: Bool = true, inRealm realm: Realm? = nil) throws {
         let mRealm = currentRealm(realm)
         mRealm.beginWrite()
         if setModified {
             object.setModified()
         }
-        mRealm.add(object, update: update)
+        mRealm.add(object, update: update ? .modified : .all)
         try mRealm.commitWrite()
     }
 
-    open static func add<S: Sequence where S.Iterator.Element: BaseModel>(_ objects: S, update: Bool = true, setModified: Bool = true, inRealm realm: Realm? = nil) throws {
+    public static func add<S: Sequence>(_ objects: S, update: Bool = true, setModified: Bool = true, inRealm realm: Realm? = nil) throws where S.Iterator.Element: BaseModel {
         let mRealm = currentRealm(realm)
         mRealm.beginWrite()
         objects.forEach({
@@ -38,11 +38,11 @@ open class DBUtils {
                 $0.setModified()
             }
         })
-        mRealm.add(objects, update: update)
+        mRealm.add(objects, update: update ? .modified : .all)
         try mRealm.commitWrite()
     }
 
-    open static func hardDelete<T: BaseModel>(_ id: String, type: T.Type, inRealm realm: Realm? = nil) throws {
+    public static func hardDelete<T: BaseModel>(_ id: String, type: T.Type, inRealm realm: Realm? = nil) throws {
         let mRealm = currentRealm(realm)
         guard let object: T = DBUtils.get(id, type: type, inRealm: mRealm) else {
             return
@@ -52,7 +52,7 @@ open class DBUtils {
         try mRealm.commitWrite()
     }
 
-    open static func hardDelete<T: BaseModel>(_ ids: [String], type: T.Type, inRealm realm: Realm? = nil) throws {
+    public static func hardDelete<T: BaseModel>(_ ids: [String], type: T.Type, inRealm realm: Realm? = nil) throws {
         for id in ids {
             try hardDelete(id, type: type, inRealm: realm)
         }
@@ -66,7 +66,7 @@ extension DBUtils {
     public static func all<T: BaseModel>(_ type: T.Type, filter: String? = nil, sorted: String? = nil, inRealm realm: Realm? = nil) -> Results<T> {
         let mRealm = currentRealm(realm)
         var res = mRealm.objects(type)
-        if let filter = filter, filter.characters.count > 0 {
+        if let filter = filter, filter.count > 0 {
             res = res.filter(filter)
         }
         if let sorted = sorted {

@@ -7,7 +7,7 @@ def library
     pod 'Alamofire'
     pod 'ICSMainFramework', :path => "./Library/ICSMainFramework/"
     pod 'MMWormhole', '~> 2.0.0'
-    pod "MMDB-Swift"
+    # pod "MMDB-Swift"
 end
 
 def tunnel
@@ -19,8 +19,8 @@ def socket
 end
 
 def model
-    pod 'RealmSwift'
-    pod 'ObjectMapper'
+    pod 'RealmSwift', '~> 10.12.0'
+    pod 'ObjectMapper', '~> 4.2.0'
 end
 
 target "Potatso" do
@@ -53,13 +53,13 @@ target "PacketProcessor" do
     socket
 end
 
-target "TodayWidget" do
-    pod 'Cartography'
-    pod 'SwiftColor'
-    library
-    socket
-    model
-end
+# target "TodayWidget" do
+#     pod 'Cartography'
+#     pod 'SwiftColor'
+#     library
+#     socket
+#     model
+# end
 
 target "PotatsoLibrary" do
     library

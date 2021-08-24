@@ -59,7 +59,7 @@ public final class RuleSet: BaseModel {
     }
 
     public func validate(inRealm realm: Realm) throws {
-        guard name.characters.count > 0 else {
+        guard name.count > 0 else {
             throw RuleSetError.emptyName
         }
     }
@@ -110,7 +110,7 @@ public func ==(lhs: RuleSet, rhs: RuleSet) -> Bool {
 
 extension RuleSet: Mappable {
     
-    public convenience init?(map: Map) {
+    public convenience init?(map: ObjectMapper.Map) {
         self.init()
         guard let rulesJSON = map.JSON["rules"] else {
             return
@@ -123,7 +123,7 @@ extension RuleSet: Mappable {
     }
     
     // Mappable
-    public func mapping(map: Map) {
+    public func mapping(map: ObjectMapper.Map) {
         uuid      <- map["id"]
         name      <- map["name"]
         createAt  <- (map["created_at"], DateTransform())

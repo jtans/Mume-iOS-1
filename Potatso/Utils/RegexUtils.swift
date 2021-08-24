@@ -19,14 +19,14 @@ class Regex {
     }
 
     func test(_ input: String) -> Bool {
-        let matches = self.internalExpression.matches(in: input, options: NSRegularExpression.MatchingOptions.reportCompletion, range:NSMakeRange(0, input.characters.count))
+        let matches = self.internalExpression.matches(in: input, options: NSRegularExpression.MatchingOptions.reportCompletion, range:NSMakeRange(0, input.count))
         return matches.count > 0
     }
 
     // return group of the first matching text
     func capturedGroup(string: String) -> [String]? {
         
-        let matches = internalExpression.matches(in: string, options: [], range: NSRange(location:0, length: string.characters.count))
+        let matches = internalExpression.matches(in: string, options: [], range: NSRange(location:0, length: string.count))
         
         guard let match = matches.first else { return nil }
         
@@ -35,7 +35,7 @@ class Regex {
 
         var results = [String]()
         for i in 1...lastRangeIndex {
-            let capturedGroupIndex = match.rangeAt(i)
+            let capturedGroupIndex = match.range(at: i)
             let matchedString = (string as NSString).substring(with: capturedGroupIndex)
             results.append(matchedString)
         }
