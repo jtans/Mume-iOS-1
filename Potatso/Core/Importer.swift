@@ -55,7 +55,7 @@ struct Importer {
     func onImportInput(_ result: String) {
         if result.hasPrefix("#") {
             let q = result.trimmingCharacters(in: CharacterSet(charactersIn: "#.,/?;'[]"))
-            if q.characters.count > 0,
+            if q.count > 0,
                 let eq = q.addingPercentEncoding(withAllowedCharacters: CharacterSet.urlQueryAllowed) {
                 importConfig("https://mumevpn.com/import.php?q=" + eq, isURL: true)
             }

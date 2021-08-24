@@ -209,7 +209,7 @@ class ProxyConfigurationViewController: FormViewController {
         }
         
         let proxyUri = self.upstreamProxy.shareUri()
-        if proxyUri.characters.count > 0 {
+        if proxyUri.count > 0 {
             let footerSize = self.view.frame.width
             self.tableView?.tableFooterView = ProxyQRCode(frame: CGRect.init(x: 0, y: 0, width: footerSize, height: footerSize), proxy: proxyUri, callback: { shareImage in
 
@@ -227,7 +227,7 @@ class ProxyConfigurationViewController: FormViewController {
         }
     }
     
-    func onSave() {
+    @objc func onSave() {
         if let error = self.save(to: &self.upstreamProxy) {
             showTextHUD("\(error)", dismissAfterDelay: 1.0)
             return
@@ -252,7 +252,7 @@ class ProxyConfigurationViewController: FormViewController {
             guard let type = values[kProxyFormType] as? ProxyType else {
                 throw "You must choose a proxy type".localized()
             }
-            guard let host = (values[kProxyFormHost] as? String)?.trimmingCharacters(in: CharacterSet.whitespaces), host.characters.count > 0 else {
+            guard let host = (values[kProxyFormHost] as? String)?.trimmingCharacters(in: CharacterSet.whitespaces), host.count > 0 else {
                 throw "Host can't be empty".localized()
             }
             if !self.isEdit {
@@ -271,10 +271,10 @@ class ProxyConfigurationViewController: FormViewController {
             var password: String?
             switch type {
             case .Shadowsocks, .ShadowsocksR:
-                guard let encryption = values[kProxyFormEncryption] as? String, encryption.characters.count > 0 else {
+                guard let encryption = values[kProxyFormEncryption] as? String, encryption.count > 0 else {
                     throw "You must choose a encryption method".localized()
                 }
-                guard let pass = values[kProxyFormPassword] as? String, pass.characters.count > 0 else {
+                guard let pass = values[kProxyFormPassword] as? String, pass.count > 0 else {
                     throw "Password can't be empty".localized()
                 }
                 authscheme = encryption

@@ -11,28 +11,28 @@ import Aspects
 
 extension UIViewController: UIGestureRecognizerDelegate  {
     
-    open override class func initialize() {
-        struct Static {
-            static var token: Int = 0
-        }
-        
-        // make sure this isn't a subclass
-        if self !== UIViewController.self {
-            return
-        }
-        
-        if (0 == Static.token) {
-            Static.token = 1
-            UIViewController.aspectHook(#selector(viewDidLoad), swizzledSelector: #selector(ics_viewDidLoad))
-            UIViewController.aspectHook(#selector(viewWillAppear(_:)), swizzledSelector: #selector(ics_viewWillAppear(_:)))
-            UIViewController.aspectHook(#selector(viewDidAppear(_:)), swizzledSelector: #selector(ics_viewDidAppear(_:)))
-            UIViewController.aspectHook(#selector(viewWillDisappear(_:)), swizzledSelector: #selector(ics_viewWillDisappear(_:)))
-        }
-    }
+//    open override class func initialize() {
+//        struct Static {
+//            static var token: Int = 0
+//        }
+//
+//        // make sure this isn't a subclass
+//        if self !== UIViewController.self {
+//            return
+//        }
+//
+//        if (0 == Static.token) {
+//            Static.token = 1
+//            UIViewController.aspectHook(#selector(viewDidLoad), swizzledSelector: #selector(ics_viewDidLoad))
+//            UIViewController.aspectHook(#selector(viewWillAppear(_:)), swizzledSelector: #selector(ics_viewWillAppear(_:)))
+//            UIViewController.aspectHook(#selector(viewDidAppear(_:)), swizzledSelector: #selector(ics_viewDidAppear(_:)))
+//            UIViewController.aspectHook(#selector(viewWillDisappear(_:)), swizzledSelector: #selector(ics_viewWillDisappear(_:)))
+//        }
+//    }
     
     // MARK: - Method Swizzling
     
-    func ics_viewWillAppear(_ animated: Bool) {
+    @objc func ics_viewWillAppear(_ animated: Bool) {
         self.ics_viewWillAppear(animated)
         if let navVC = self.navigationController {
             if !isModal() {
@@ -41,24 +41,24 @@ extension UIViewController: UIGestureRecognizerDelegate  {
         }
     }
     
-    func ics_viewDidLoad() {
+    @objc func ics_viewDidLoad() {
         self.ics_viewDidLoad()
     }
     
-    func ics_viewDidAppear(_ animated: Bool) {
+    @objc func ics_viewDidAppear(_ animated: Bool) {
         self.ics_viewDidAppear(animated)
         if let navVC = self.navigationController {
             enableSwipeGesture(navVC.viewControllers.count > 1)
         }
     }
     
-    func ics_viewWillDisappear(_ animated: Bool) {
+    @objc func ics_viewWillDisappear(_ animated: Bool) {
         self.ics_viewWillDisappear(animated)
     }
     
     func showLeftBackButton(_ shouldShow: Bool) {
         if shouldShow {
-            let backItem = UIBarButtonItem(image: "Back".templateImage, style: UIBarButtonItemStyle.plain, target: self, action: #selector(pop))
+            let backItem = UIBarButtonItem(image: "Back".templateImage, style: UIBarButtonItem.Style.plain, target: self, action: #selector(pop))
             navigationItem.leftBarButtonItem = backItem
         }else{
             navigationItem.leftBarButtonItem = nil
@@ -77,17 +77,17 @@ extension UIViewController: UIGestureRecognizerDelegate  {
 
     func addChildVC(_ child: UIViewController) {
         view.addSubview(child.view)
-        addChildViewController(child)
-        child.didMove(toParentViewController: self)
+        addChild(child)
+        child.didMove(toParent: self)
     }
 
     func removeChildVC(_ child: UIViewController) {
-        child.willMove(toParentViewController: nil)
+        child.willMove(toParent: nil)
         child.view.removeFromSuperview()
-        child.removeFromParentViewController()
+        child.removeFromParent()
     }
     
-    func pop() {
+    @objc func pop() {
         navigationController?.popViewController(animated: true)
     }
     

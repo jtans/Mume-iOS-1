@@ -15,7 +15,7 @@ import CallbackURLKit
 
 class UrlHandler: NSObject, AppLifeCycleProtocol {
     
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplicationLaunchOptionsKey: Any]?) -> Bool {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         let manager = CallbackURLKit.Manager.shared
         manager.callbackURLScheme = CallbackURLKit.Manager.urlSchemes?.first
         for action in [URLAction.ON, URLAction.OFF, URLAction.SWITCH] {
@@ -35,7 +35,7 @@ class UrlHandler: NSObject, AppLifeCycleProtocol {
         return true
     }
     
-    func application(_ app: UIApplication, open url: URL, options: [UIApplicationOpenURLOptionsKey : Any]) -> Bool {
+    func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any]) -> Bool {
         guard let scheme = url.scheme?.lowercased() else {
             return false
         }
@@ -94,7 +94,7 @@ class UrlHandler: NSObject, AppLifeCycleProtocol {
         let pasteBoard = UIPasteboard.general
         if let content = pasteBoard.string?.trimmingCharacters(in: CharacterSet.whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: " !@#$%^&*")),
             let str = content.removingPercentEncoding,
-            str.characters.count > 3 {
+            str.count > 3 {
             if Proxy.uriIsProxy(str) {
                 UIPasteboard.general.string = ""
                 if let proxy = try? Proxy(string: str), Proxy.insertOrUpdate(proxy: proxy) {

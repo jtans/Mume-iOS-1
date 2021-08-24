@@ -30,9 +30,9 @@ class ProxyUtils {
     
     
     // https://stackoverflow.com/questions/25890533/
-    static func resolve(host: String, completion: @escaping ((String) -> Void)) {
+    static func resolve(host: String?, completion: @escaping ((String) -> Void)) {
         let queue = DispatchQueue.global(qos: .background)
-        guard let lhost = String(host) else {
+        guard let lhost = host else {
             return
         }
         queue.async {

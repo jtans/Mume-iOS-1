@@ -93,13 +93,13 @@ class RuleConfigurationViewController: FormViewController {
                 })
     }
     
-    func save() {
+    @objc func save() {
         do {
             let values = form.values()
             guard let type = values[kRuleFormType] as? MMRuleType else {
                 throw "You must choose a type".localized()
             }
-            guard let value = (values[kRuleFormValue] as? String)?.trimmingCharacters(in: CharacterSet.whitespaces), value.characters.count > 0 else {
+            guard let value = (values[kRuleFormValue] as? String)?.trimmingCharacters(in: CharacterSet.whitespaces), value.count > 0 else {
                 throw "Value can't be empty".localized()
             }
             guard let action = values[kRuleFormAction] as? RuleAction else {

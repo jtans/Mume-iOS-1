@@ -206,14 +206,14 @@ class SettingsViewController: FormViewController, MFMailComposeViewControllerDel
         let lang = Locale.preferredLanguages[0]
         let versionCode = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? ""
         NSLog("showUserManual ===> lang: \(lang), version: \(versionCode)")
-        let network = (DataInitializer.reachabilityManager?.networkReachabilityStatus.description()) ?? ""
-        let vi = (UIDevice.current.identifierForVendor?.uuidString) ?? ""
-        guard let manurl = URL(string: url + "?lang=\(lang)&identifierForVendor=\(vi)&api=2&network=\(network)&appstore=\(AppEnv.isAppStore)") else {
-            return
-        }
-        let vc = BaseSafariViewController(url: manurl, entersReaderIfAvailable: false)
-        vc.delegate = self
-        present(vc, animated: true, completion: nil)
+//        let network = (DataInitializer.reachabilityManager?.networkReachabilityStatus) ?? ""
+//        let vi = (UIDevice.current.identifierForVendor?.uuidString) ?? ""
+//        guard let manurl = URL(string: url + "?lang=\(lang)&identifierForVendor=\(vi)&api=2&network=\(network)&appstore=\(AppEnv.isAppStore)") else {
+//            return
+//        }
+//        let vc = BaseSafariViewController(url: manurl, entersReaderIfAvailable: false)
+//        vc.delegate = self
+//        present(vc, animated: true, completion: nil)
     }
 
     func followTwitter() {

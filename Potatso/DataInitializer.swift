@@ -22,7 +22,7 @@ class DataInitializer: NSObject, AppLifeCycleProtocol {
     static var vpnStatus: VPNStatus = .off
     static var selectedProxy: String? = nil
     
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplicationLaunchOptionsKey: Any]?) -> Bool {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         let _ = Manager.shared
         
         self.updateMumeServers()
@@ -30,7 +30,7 @@ class DataInitializer: NSObject, AppLifeCycleProtocol {
             guard result.count > 0 else {
                 return
             }
-            let data = result.filter({ $0.name.characters.count > 0})
+            let data = result.filter({ $0.name.count > 0})
             for i in 0..<data.count {
                 do {
                     try RuleSet.addRemoteObject(data[i])

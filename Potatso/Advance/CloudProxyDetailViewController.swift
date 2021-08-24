@@ -43,7 +43,7 @@ class CloudProxyDetailViewController: ProxyConfigurationViewController {
         guard let section = form.allSections.last else {
             return
         }
-        if let due = self.cloudProxy.due, due.characters.count > 0 {
+        if let due = self.cloudProxy.due, due.count > 0 {
             section <<< TextRow(kProxyFormDue) {
                 $0.title = "Expiry date".localized()
                 $0.value = due
@@ -52,7 +52,7 @@ class CloudProxyDetailViewController: ProxyConfigurationViewController {
                 })
                 }
         }
-        if let provider = self.cloudProxy.provider, provider.characters.count > 0 {
+        if let provider = self.cloudProxy.provider, provider.count > 0 {
             section <<< TextRow(kProxyFormProvider) {
                 $0.title = "Provider".localized()
                 $0.value = provider
