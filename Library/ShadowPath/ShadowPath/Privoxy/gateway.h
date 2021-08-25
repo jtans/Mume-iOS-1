@@ -75,6 +75,8 @@ extern jb_socket socks4_connect(char *gateway_host,
 
 extern jb_socket socks5_connect(char *gateway_host,
                          int gateway_port,
+                         char *auth_username,
+                         char *auth_password,
                          enum forwarder_type type,
                          const char *target_host,
                          int target_port,

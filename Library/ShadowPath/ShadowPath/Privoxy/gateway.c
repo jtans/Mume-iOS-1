@@ -218,6 +218,8 @@ void remember_connection(const struct reusable_connection *connection)
 
    assert(reusable_connection[slot].gateway_host == NULL);
    assert(reusable_connection[slot].gateway_port == 0);
+   assert(reusable_connection[slot].auth_username == NULL);
+   assert(reusable_connection[slot].auth_password == NULL);
    assert(reusable_connection[slot].forwarder_type == SOCKS_NONE);
    assert(reusable_connection[slot].forward_host == NULL);
    assert(reusable_connection[slot].forward_port == 0);
@@ -232,6 +234,23 @@ void remember_connection(const struct reusable_connection *connection)
       reusable_connection[slot].gateway_host = NULL;
    }
    reusable_connection[slot].gateway_port = connection->gateway_port;
+    
+   if (NULL != connection->auth_username)
+   {
+      reusable_connection[slot].auth_username = strdup_or_die(connection->auth_username);
+   }
+   else
+   {
+      reusable_connection[slot].auth_username = NULL;
+   }
+   if (NULL != connection->auth_password)
+   {
+      reusable_connection[slot].auth_password = strdup_or_die(connection->auth_password);
+   }
+   else
+   {
+      reusable_connection[slot].auth_password = NULL;
+   }
 
    if (NULL != connection->forward_host)
    {
@@ -274,6 +293,8 @@ void mark_connection_closed(struct reusable_connection *closed_connection)
    closed_connection->forwarder_type = SOCKS_NONE;
    freez(closed_connection->gateway_host);
    closed_connection->gateway_port = 0;
+   freez(closed_connection->auth_username);
+   freez(closed_connection->auth_password);
    freez(closed_connection->forward_host);
    closed_connection->forward_port = 0;
 }
@@ -325,6 +346,60 @@ void forget_connection(jb_socket sfd)
 #ifdef FEATURE_CONNECTION_KEEP_ALIVE
 /*********************************************************************
  *
+ * Function    :  string_or_none
+ *
+ * Description :  Returns a given string or "none" if a NULL pointer
+ *                is given.
+ *                Helper function for connection_destination_matches().
+ *
+ * Parameters  :
+ *          1  :  string = The string to check.
+ *
+ * Returns     :  The string if non-NULL, "none" otherwise.
+ *
+ *********************************************************************/
+static const char *string_or_none(const char *string)
+{
+   return(string != NULL ? string : "none");
+}
+
+
+/*********************************************************************
+ *
+ * Function    :  connection_detail_matches
+ *
+ * Description :  Helper function for connection_destination_matches().
+ *                Compares strings which can be NULL.
+ *
+ * Parameters  :
+ *          1  :  connection_detail = The connection detail to compare.
+ *          2  :  fowarder_detail = The forwarder detail to compare.
+ *
+ * Returns     :  TRUE for yes, FALSE otherwise.
+ *
+ *********************************************************************/
+static int connection_detail_matches(const char *connection_detail,
+                                     const char *forwarder_detail)
+{
+   if (connection_detail == NULL && forwarder_detail == NULL)
+   {
+      /* Both details are unset. */
+      return TRUE;
+   }
+
+   if ((connection_detail == NULL && forwarder_detail != NULL)
+    || (connection_detail != NULL && forwarder_detail == NULL))
+   {
+      /* Only one detail isn't set. */
+      return FALSE;
+   }
+
+   /* Both details are set, but do they match? */
+   return(!strcmpic(connection_detail, forwarder_detail));
+
+}
+/*********************************************************************
+ *
  * Function    :  connection_destination_matches
  *
  * Description :  Determines whether a remembered connection can
@@ -361,6 +436,24 @@ int connection_destination_matches(const struct reusable_connection *connection,
          connection->gateway_host, fwd->gateway_host);
       return FALSE;
    }
+    
+    if (!connection_detail_matches(connection->auth_username, fwd->auth_username))
+    {
+        log_error(LOG_LEVEL_CONNECT, "Socks user name mismatch. "
+                  "Previous user name: %s. Current user name: %s",
+                  string_or_none(connection->auth_username),
+                  string_or_none(fwd->auth_username));
+        return FALSE;
+    }
+    
+    if (!connection_detail_matches(connection->auth_password, fwd->auth_password))
+    {
+        log_error(LOG_LEVEL_CONNECT, "Socks user name mismatch. "
+                  "Previous password: %s. Current password: %s",
+                  string_or_none(connection->auth_password),
+                  string_or_none(fwd->auth_password));
+        return FALSE;
+    }
 
    if ((    (NULL != connection->forward_host)
          && (NULL != fwd->forward_host)
@@ -580,11 +673,11 @@ void set_keep_alive_timeout(unsigned int timeout)
  * Returns     :  JB_INVALID_SOCKET => failure, else it is the socket file descriptor.
  *
  *********************************************************************/
-jb_socket forwarded_connect(const struct forward_spec * fwd,
+jb_socket forwarded_connect(const struct forward_spec *fwd,
                             struct http_request *http,
                             struct client_state *csp)
 {
-   const char * dest_host;
+   const char *dest_host;
    int dest_port;
    jb_socket sfd = JB_INVALID_SOCKET;
 
@@ -601,16 +694,48 @@ jb_socket forwarded_connect(const struct forward_spec * fwd,
 #endif /* def FEATURE_CONNECTION_SHARING */
 
    /* Figure out if we need to connect to the web server or a HTTP proxy. */
-    sfd = connect_to_forward(csp, fwd, 0);
+   if (fwd->forward_host)
+   {
+      /* HTTP proxy */
+      dest_host = fwd->forward_host;
+      dest_port = fwd->forward_port;
+   }
+   else
+   {
+      /* Web server */
+      dest_host = http->host;
+      dest_port = http->port;
+   }
 
-    if (JB_INVALID_SOCKET != sfd)
-    {
-        log_error(LOG_LEVEL_CONNECT,
+   /* Connect, maybe using a SOCKS proxy */
+   switch (fwd->type)
+   {
+      case SOCKS_NONE:
+      case FORWARD_WEBSERVER:
+         sfd = connect_to(dest_host, dest_port, csp, 0);
+         break;
+      case SOCKS_4:
+      case SOCKS_4A:
+         sfd = socks4_connect(fwd->gateway_host, fwd->gateway_port, fwd->type, dest_host, dest_port, csp);
+         break;
+      case SOCKS_5:
+      case SOCKS_5T:
+         sfd = socks5_connect(fwd->gateway_host, fwd->gateway_port, fwd->auth_username, fwd->auth_password, fwd->type, dest_host, dest_port, csp);
+         break;
+      default:
+         /* Should never get here */
+         log_error(LOG_LEVEL_FATAL,
+            "Internal error in forwarded_connect(). Bad proxy type: %d", fwd->type);
+   }
+
+   if (JB_INVALID_SOCKET != sfd)
+   {
+      log_error(LOG_LEVEL_CONNECT,
          "Created new connection to %s:%d on socket %d.",
          http->host, http->port, sfd);
-    }
+   }
 
-    return sfd;
+   return sfd;
 
 }
 
@@ -885,6 +1010,8 @@ static const char *translate_socks5_error(int socks_error)
  *********************************************************************/
 jb_socket socks5_connect(char *gateway_host,
                         int gateway_port,
+                         char *auth_username,
+                         char *auth_password,
                          enum forwarder_type type,
                                 const char *target_host,
                                 int target_port,
@@ -957,7 +1084,17 @@ jb_socket socks5_connect(char *gateway_host,
    client_pos = 0;
    cbuf[client_pos++] = '\x05'; /* Version */
    cbuf[client_pos++] = '\x01'; /* One authentication method supported */
-   cbuf[client_pos++] = '\x00'; /* The no authentication authentication method */
+   
+    if (auth_username && auth_password)
+    {
+        cbuf[client_pos++] = '\x02'; /* Two authentication methods supported */
+        cbuf[client_pos++] = '\x02'; /* Username/password */
+    }
+    else
+    {
+        cbuf[client_pos++] = '\x01'; /* One authentication method supported */
+    }
+    cbuf[client_pos++] = '\x00'; /* The no authentication authentication method */
 
    if (write_socket(sfd, cbuf, client_pos))
    {
@@ -999,11 +1136,63 @@ jb_socket socks5_connect(char *gateway_host,
       err = 1;
    }
 
-   if (!err && (sbuf[1] != '\x00'))
-   {
-      errstr = "SOCKS5 negotiation protocol error";
-      err = 1;
-   }
+    if (!err && (sbuf[1] == '\x02'))
+    {
+        if (auth_username && auth_password)
+        {
+            /* check cbuf overflow */
+            size_t auth_len = strlen(auth_username) + strlen(auth_password) + 3;
+            if (auth_len > sizeof(cbuf))
+            {
+                errstr = "SOCKS5 username and/or password too long";
+                err = 1;
+            }
+        }
+        else
+        {
+            errstr = "SOCKS5 server requested authentication while "
+            "no credentials are configured";
+            err = 1;
+        }
+        
+        if (!err)
+        {
+            client_pos = 0;
+            cbuf[client_pos++] = '\x01'; /* Version */
+            cbuf[client_pos++] = (char)strlen(auth_username);
+            
+            memcpy(cbuf + client_pos, auth_username, strlen(auth_username));
+            client_pos += strlen(auth_username);
+            cbuf[client_pos++] = (char)strlen(auth_password);
+            memcpy(cbuf + client_pos, auth_password, strlen(auth_password));
+            client_pos += strlen(auth_password);
+            
+            if (write_socket(sfd, cbuf, client_pos))
+            {
+                errstr = "SOCKS5 negotiation auth write failed";
+                csp->error_message = strdup(errstr);
+                log_error(LOG_LEVEL_CONNECT, "%s", errstr);
+                close_socket(sfd);
+                return(JB_INVALID_SOCKET);
+            }
+            
+            if (read_socket(sfd, sbuf, sizeof(sbuf)) != 2)
+            {
+                errstr = "SOCKS5 negotiation auth read failed";
+                err = 1;
+            }
+        }
+        
+        if (!err && (sbuf[1] != '\x00'))
+        {
+            errstr = "SOCKS5 authentication failed";
+            err = 1;
+        }
+    } else if (!err && (sbuf[1] != '\x00'))
+    {
+        errstr = "SOCKS5 negotiation protocol error";
+        err = 1;
+    }
 
    if (err)
    {

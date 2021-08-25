@@ -234,7 +234,7 @@ jb_socket connect_to_forward(struct client_state *csp, struct forward_spec *fwd,
             break;
         case SOCKS_5:
         case SOCKS_5T:
-            return socks5_connect(fwd->gateway_host, fwd->gateway_port, fwd->type, dest_host, dest_port, csp);
+            return socks5_connect(fwd->gateway_host, fwd->gateway_port, fwd->auth_username, fwd->auth_password, fwd->type, dest_host, dest_port, csp);
             break;
         default:
             log_error(LOG_LEVEL_FATAL,

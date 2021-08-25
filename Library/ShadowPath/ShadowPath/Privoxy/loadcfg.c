@@ -1008,7 +1008,7 @@ struct configuration_spec * load_config(void)
             {
                cur_fwd->forward_port = 8000;
                parse_forwarder_address(p, &cur_fwd->forward_host,
-                  &cur_fwd->forward_port);
+                  &cur_fwd->forward_port, NULL, NULL);
             }
             /* Add to list. */
             cur_fwd->next = config->forward;
@@ -1064,7 +1064,7 @@ struct configuration_spec * load_config(void)
             {
                cur_fwd->gateway_port = 1080;
                parse_forwarder_address(p, &cur_fwd->gateway_host,
-                  &cur_fwd->gateway_port);
+                  &cur_fwd->gateway_port, NULL, NULL);
             }
 
             /* Parse the parent HTTP proxy host[:port] */
@@ -1074,7 +1074,7 @@ struct configuration_spec * load_config(void)
             {
                cur_fwd->forward_port = 8000;
                parse_forwarder_address(p, &cur_fwd->forward_host,
-                  &cur_fwd->forward_port);
+                  &cur_fwd->forward_port, NULL, NULL);
             }
               /* Add to list. */
               cur_fwd->next = config->forward;
@@ -1142,12 +1142,13 @@ struct configuration_spec * load_config(void)
                break;
             }
 
-            /* Parse the SOCKS proxy host[:port] */
+            /* Parse the SOCKS proxy [user:pass@]host[:port] */
             p = vec[1];
 
             cur_fwd->gateway_port = 1080;
-            parse_forwarder_address(p, &cur_fwd->gateway_host,
-               &cur_fwd->gateway_port);
+            parse_forwarder_address(p,
+                             &cur_fwd->gateway_host, &cur_fwd->gateway_port,
+                             &cur_fwd->auth_username, &cur_fwd->auth_password);
 
             /* Parse the parent HTTP proxy host[:port] */
             p = vec[2];
@@ -1156,7 +1157,7 @@ struct configuration_spec * load_config(void)
             {
                cur_fwd->forward_port = 8000;
                parse_forwarder_address(p, &cur_fwd->forward_host,
-                  &cur_fwd->forward_port);
+                  &cur_fwd->forward_port, NULL, NULL);
             }
 
               /* Add to list. */

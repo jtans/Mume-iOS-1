@@ -718,10 +718,13 @@ struct reusable_connection
    char *host;
    int  port;
    enum forwarder_type forwarder_type;
-   char *gateway_host;
-   int  gateway_port;
    char *forward_host;
    int  forward_port;
+    
+   char *gateway_host;
+   int  gateway_port;
+   char *auth_username;
+   char *auth_password;
 };
 
 
@@ -1218,6 +1221,12 @@ struct forward_spec
 
     /** SOCKS server port. */
     int   gateway_port;
+    
+    /** SOCKS5 username. */
+    char *auth_username;
+
+    /** SOCKS5 password. */
+    char *auth_password;
 
     /** Parent HTTP proxy hostname, or NULL for none. */
     char *forward_host;
