@@ -1083,7 +1083,6 @@ jb_socket socks5_connect(char *gateway_host,
 
    client_pos = 0;
    cbuf[client_pos++] = '\x05'; /* Version */
-   cbuf[client_pos++] = '\x01'; /* One authentication method supported */
    
     if (auth_username && auth_password)
     {
