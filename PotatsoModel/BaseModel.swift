@@ -42,7 +42,7 @@ public func setupDefaultReaml() {
     defaultRealm = try! Realm()
 }
 
-
+@objcMembers
 open class BaseModel: Object {
     open dynamic var uuid = UUID().uuidString
     open dynamic var createAt = Date().timeIntervalSince1970

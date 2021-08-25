@@ -29,7 +29,7 @@ extension ConfigurationGroupError: CustomStringConvertible {
     
 }
 
-
+@objcMembers
 open class ConfigurationGroup: BaseModel {
     open dynamic var editable = true
     open dynamic var name = ""
