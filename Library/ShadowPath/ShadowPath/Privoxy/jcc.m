@@ -1337,6 +1337,12 @@ static enum chunk_status chunked_body_is_complete(struct iob *iob, size_t *lengt
       }
       /* Move beyond the chunkdata. */
       p += 2 + chunksize;
+       
+       /* Make sure we're still within the buffer and have two bytes left */
+       if (p + 2 > iob->eod)
+       {
+           return CHUNK_STATUS_MISSING_DATA;
+       }
 
       /* There should be another "\r\n" to skip */
       if (memcmp(p, "\r\n", 2))
@@ -1932,6 +1938,9 @@ static void chat(struct client_state *csp)
       }
 #endif /* def FEATURE_CONNECTION_KEEP_ALIVE */
 
+       /*
+        * Connecting to destination server
+        */
       csp->server_connection.sfd = forwarded_connect(fwd, http, csp);
 
       if (csp->server_connection.sfd == JB_INVALID_SOCKET)

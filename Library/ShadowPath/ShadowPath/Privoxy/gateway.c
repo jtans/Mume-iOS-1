@@ -1017,9 +1017,12 @@ jb_socket socks5_connect(char *gateway_host,
                                 int target_port,
                                 struct client_state *csp)
 {
+#define SIZE_SOCKS5_REPLY_IPV4 10
+#define SIZE_SOCKS5_REPLY_IPV6 22
+#define SOCKS5_REPLY_DIFFERENCE (SIZE_SOCKS5_REPLY_IPV6 - SIZE_SOCKS5_REPLY_IPV4)
    int err = 0;
    char cbuf[300];
-   char sbuf[10];
+   char sbuf[SIZE_SOCKS5_REPLY_IPV6];
    size_t client_pos = 0;
    int server_size = 0;
    size_t hostlen = 0;
@@ -1277,8 +1280,8 @@ jb_socket socks5_connect(char *gateway_host,
       }
    }
 
-   server_size = read_socket(sfd, sbuf, sizeof(sbuf));
-   if (server_size != sizeof(sbuf))
+   server_size = read_socket(sfd, sbuf, SIZE_SOCKS5_REPLY_IPV4);
+   if (server_size != SIZE_SOCKS5_REPLY_IPV4)
    {
       errstr = "SOCKS5 negotiation read failed";
    }
@@ -1298,7 +1301,28 @@ jb_socket socks5_connect(char *gateway_host,
       }
       else
       {
-         return(sfd);
+          if (sbuf[3] == '\x04')
+          {
+              /*
+               * The address field contains an IPv6 address
+               * which means we didn't get the whole reply
+               * yet. Read and discard the rest of it to make
+               * sure it isn't treated as HTTP data later on.
+               */
+              server_size = read_socket(sfd, sbuf, SOCKS5_REPLY_DIFFERENCE);
+              if (server_size != SOCKS5_REPLY_DIFFERENCE)
+              {
+                  errstr = "SOCKS5 negotiation read failed (IPv6 address)";
+              }
+          }
+          else if (sbuf[3] != '\x01')
+          {
+              errstr = "SOCKS5 reply contains unsupported address type";
+          }
+          if (errstr == NULL)
+          {
+              return(sfd);
+          }
       }
    }
 
