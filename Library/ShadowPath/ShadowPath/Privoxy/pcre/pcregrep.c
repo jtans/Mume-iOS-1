@@ -9,7 +9,7 @@ its pattern matching. */
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
-#include "config.h"
+#include "pcre_config.h"
 #include "pcre.h"
 
 #define FALSE 0
