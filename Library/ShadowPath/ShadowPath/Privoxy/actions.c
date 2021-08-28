@@ -1,4 +1,3 @@
-const char actions_rcs[] = "$Id: actions.c,v 1.95 2016/01/16 12:33:35 fabiankeil Exp $";
 /*********************************************************************
  *
  * File        :  $Source: /cvsroot/ijbswa/current/actions.c,v $
@@ -6,7 +5,7 @@ const char actions_rcs[] = "$Id: actions.c,v 1.95 2016/01/16 12:33:35 fabiankeil
  * Purpose     :  Declares functions to work with actions files
  *
  * Copyright   :  Written by and Copyright (C) 2001-2016 the
- *                Privoxy team. http://www.privoxy.org/
+ *                Privoxy team. https://www.privoxy.org/
  *
  *                Based on the Internet Junkbuster originally written
  *                by and Copyright (C) 1997 Anonymous Coders and
@@ -33,7 +32,7 @@ const char actions_rcs[] = "$Id: actions.c,v 1.95 2016/01/16 12:33:35 fabiankeil
  *********************************************************************/
 
 
-#include "sp_config.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -56,18 +55,6 @@ const char actions_rcs[] = "$Id: actions.c,v 1.95 2016/01/16 12:33:35 fabiankeil
 #include "cgi.h"
 #include "ssplit.h"
 #include "filters.h"
-#include <Foundation/Foundation.h>
-
-const char actions_h_rcs[] = ACTIONS_H_VERSION;
-
-struct url_actions *po_url_rules = NULL;
-struct url_actions *po_url_rules_tail = NULL;
-
-struct url_actions *po_ip_rules = NULL;
-struct url_actions *po_ip_rules_tail = NULL;
-
-struct url_actions *po_dns_ip_rules = NULL;
-struct url_actions *po_dns_ip_rules_tail = NULL;
 
 /*
  * We need the main list of options.
@@ -133,7 +120,10 @@ static const struct action_name action_names[] =
 };
 
 
-static int load_one_actions_file(struct client_state *csp, int fileid);
+#ifndef FUZZ
+static
+#endif
+int load_one_actions_file(struct client_state *csp, int fileid);
 
 
 /*********************************************************************
@@ -538,11 +528,11 @@ jb_err get_actions(char *line,
             case AV_ADD_STRING:
                {
                   /* add single string. */
+
                   if ((value == NULL) || (*value == '\0'))
                   {
-
-                        if (0 == strcmpic(action->name, "+block"))
-                        {
+                     if (0 == strcmpic(action->name, "+block"))
+                     {
                         /*
                          * XXX: Temporary backwards compatibility hack.
                          * XXX: should include line number.
@@ -551,16 +541,18 @@ jb_err get_actions(char *line,
                         log_error(LOG_LEVEL_ERROR,
                            "block action without reason found. This may "
                            "become a fatal error in future versions.");
-                        }
-                        else if (0 == strcmpic(action->name, "+forward-resolved-ip") || 0 == strcmpic(action->name, "+forward-rule") )
-                        {
-                            value = "";
-                        }
-                        else
-                        {
+                     }
+                     else
+                     {
                         return JB_ERR_PARSE;
-                        }
+                     }
                   }
+#ifdef FEATURE_EXTENDED_STATISTICS
+                  if (0 == strcmpic(action->name, "+block"))
+                  {
+                     register_block_reason_for_statistics(value);
+                  }
+#endif
                   /* FIXME: should validate option string here */
                   freez (cur_action->string[action->index]);
                   cur_action->string[action->index] = strdup(value);
@@ -1095,6 +1087,48 @@ int load_action_files(struct client_state *csp)
 
 /*********************************************************************
  *
+ * Function    :  filter_type_to_string
+ *
+ * Description :  Converts a filter type enum into a string.
+ *
+ * Parameters  :
+ *          1  :  filter_type = filter_type as enum
+ *
+ * Returns     :  Pointer to static string.
+ *
+ *********************************************************************/
+static const char *filter_type_to_string(enum filter_type filter_type)
+{
+   switch (filter_type)
+   {
+   case FT_CONTENT_FILTER:
+      return "content filter";
+   case FT_CLIENT_HEADER_FILTER:
+      return "client-header filter";
+   case FT_SERVER_HEADER_FILTER:
+      return "server-header filter";
+   case FT_CLIENT_HEADER_TAGGER:
+      return "client-header tagger";
+   case FT_SERVER_HEADER_TAGGER:
+      return "server-header tagger";
+#ifdef FEATURE_EXTERNAL_FILTERS
+   case FT_EXTERNAL_CONTENT_FILTER:
+      return "external content filter";
+#endif
+   case FT_SUPPRESS_TAG:
+      return "suppress tag filter";
+   case FT_CLIENT_BODY_FILTER:
+      return "client body filter";
+   case FT_INVALID_FILTER:
+      return "invalid filter type";
+   }
+
+   return "unknown filter type";
+
+}
+
+/*********************************************************************
+ *
  * Function    :  referenced_filters_are_missing
  *
  * Description :  Checks if any filters of a certain type referenced
@@ -1119,7 +1153,8 @@ static int referenced_filters_are_missing(const struct client_state *csp,
    {
       if (NULL == get_filter(csp, filtername->str, filter_type))
       {
-         log_error(LOG_LEVEL_ERROR, "Missing filter '%s'", filtername->str);
+         log_error(LOG_LEVEL_ERROR, "Missing %s '%s'",
+            filter_type_to_string(filter_type), filtername->str);
          return 1;
       }
    }
@@ -1154,7 +1189,8 @@ static int action_spec_is_valid(struct client_state *csp, const struct action_sp
       {ACTION_MULTI_CLIENT_HEADER_FILTER, FT_CLIENT_HEADER_FILTER},
       {ACTION_MULTI_SERVER_HEADER_FILTER, FT_SERVER_HEADER_FILTER},
       {ACTION_MULTI_CLIENT_HEADER_TAGGER, FT_CLIENT_HEADER_TAGGER},
-      {ACTION_MULTI_SERVER_HEADER_TAGGER, FT_SERVER_HEADER_TAGGER}
+      {ACTION_MULTI_SERVER_HEADER_TAGGER, FT_SERVER_HEADER_TAGGER},
+      {ACTION_MULTI_CLIENT_BODY_FILTER, FT_CLIENT_BODY_FILTER}
    };
    int errors = 0;
    int i;
@@ -1167,22 +1203,6 @@ static int action_spec_is_valid(struct client_state *csp, const struct action_sp
 
    return errors;
 
-}
-
-static void loadIPCIDR(char *ipcidr, radix_tree_t *tree) {
-    struct access_control_addr addr;
-    if (acl_addr(ipcidr, &addr) < 0) {
-        log_error(LOG_LEVEL_ERROR, "Invalid ip cidr address, port or netmask for geo-ip data ");
-        return ;
-    }
-    if (addr.addr.ss_family != AF_INET && addr.mask.ss_family != AF_INET) {
-        log_error(LOG_LEVEL_ERROR, "Invalid ip cidr address, ipv6 not supported ");
-        return ;
-    }
-    struct sockaddr_in *sin = (struct sockaddr_in *)&addr.addr;
-    struct sockaddr_in *mask = (struct sockaddr_in *)&addr.mask;
-    radix32tree_insert(tree, ntohl(sin->sin_addr.s_addr), ntohl(mask->sin_addr.s_addr), 1);
-    freez(ipcidr);
 }
 
 
@@ -1200,7 +1220,10 @@ static void loadIPCIDR(char *ipcidr, radix_tree_t *tree) {
  * Returns     :  0 => Ok, everything else is an error.
  *
  *********************************************************************/
-static int load_one_actions_file(struct client_state *csp, int fileid)
+#ifndef FUZZ
+static
+#endif
+int load_one_actions_file(struct client_state *csp, int fileid)
 {
 
    /*
@@ -1227,12 +1250,6 @@ static int load_one_actions_file(struct client_state *csp, int fileid)
    unsigned long linenum = 0;
    mode = MODE_START_OF_FILE;
 
-    int size = sizeof(struct url_actions);
-
-//    if (current_actions_file[fileid]) {
-//        csp->actions_list[fileid] = current_actions_file[fileid];
-//        return 0;
-//    }
    if (!check_file_changed(current_actions_file[fileid], csp->config->actions_file[fileid], &fs))
    {
       /* No need to load */
@@ -1247,13 +1264,7 @@ static int load_one_actions_file(struct client_state *csp, int fileid)
       return 1; /* never get here */
    }
 
-   fs->f = last_perm = (struct url_actions *)zalloc(sizeof(*last_perm));
-   if (last_perm == NULL)
-   {
-      log_error(LOG_LEVEL_FATAL, "can't load actions file '%s': out of memory!",
-                csp->config->actions_file[fileid]);
-      return 1; /* never get here */
-   }
+   fs->f = last_perm = zalloc_or_die(sizeof(*last_perm));
 
    if ((fp = fopen(csp->config->actions_file[fileid], "r")) == NULL)
    {
@@ -1397,15 +1408,7 @@ static int load_one_actions_file(struct client_state *csp, int fileid)
                cur_action = NULL;
             }
             cur_action_used = 0;
-            cur_action = (struct action_spec *)zalloc(sizeof(*cur_action));
-            if (cur_action == NULL)
-            {
-               fclose(fp);
-               log_error(LOG_LEVEL_FATAL,
-                  "can't load actions file '%s': out of memory",
-                  csp->config->actions_file[fileid]);
-               return 1; /* never get here */
-            }
+            cur_action = zalloc_or_die(sizeof(*cur_action));
             init_action(cur_action);
 
             /*
@@ -1521,14 +1524,7 @@ static int load_one_actions_file(struct client_state *csp, int fileid)
             return 1; /* never get here */
          }
 
-         if ((new_alias = zalloc(sizeof(*new_alias))) == NULL)
-         {
-            fclose(fp);
-            log_error(LOG_LEVEL_FATAL,
-               "can't load actions file '%s': out of memory!",
-               csp->config->actions_file[fileid]);
-            return 1; /* never get here */
-         }
+         new_alias = zalloc_or_die(sizeof(*new_alias));
 
          /* Eat any the whitespace before the '=' */
          end--;
@@ -1579,135 +1575,24 @@ static int load_one_actions_file(struct client_state *csp, int fileid)
          /* it's an URL pattern */
 
          /* allocate a new node */
-         if ((perm = zalloc(sizeof(*perm))) == NULL)
-         {
-            fclose(fp);
-            log_error(LOG_LEVEL_FATAL,
-               "can't load actions file '%s': out of memory!",
-               csp->config->actions_file[fileid]);
-            return 1; /* never get here */
-         }
+         perm = zalloc_or_die(sizeof(*perm));
 
          perm->action = cur_action;
          cur_action_used = 1;
-          int vec_count;
-          char *vec[3];
-          char desc[BUFFER_SIZE];
 
-          /* Create a copy ssplit can modify */
-          strlcpy(desc, buf, sizeof(desc));
-          perm->rule = strdup_or_die(buf);
+         /* Save the URL pattern */
+         if (create_pattern_spec(perm->url, buf))
+         {
+            fclose(fp);
+            log_error(LOG_LEVEL_FATAL,
+               "can't load actions file '%s': line %lu: cannot create URL or TAG pattern from: %s",
+               csp->config->actions_file[fileid], linenum, buf);
+            return 1; /* never get here */
+         }
 
-          vec_count = ssplit(desc, ", ", vec, SZ(vec));
-
-          if (vec_count != 3) {
-              if (create_pattern_spec(perm->url, buf))
-              {
-                  log_error(LOG_LEVEL_ERROR,
-                            "can't load actions file '%s': line %lu: cannot create URL or TAG pattern from: %s",
-                            csp->config->actions_file[fileid], linenum, buf);
-                  continue;
-              }
-              /* add it to the list */
-              last_perm->next = perm;
-              last_perm = perm;
-              continue;
-          }
-          if (!strcmpic(vec[2], "PROXY")) {
-              perm->routing = ROUTE_PROXY;
-          }else if (!strcmpic(vec[2], "DIRECT")) {
-              perm->routing = ROUTE_DIRECT;
-          }else if (!strcmpic(vec[2], "REJECT")) {
-              perm->routing = ROUTE_BLOCK;
-          }else {
-              log_error(LOG_LEVEL_ERROR,
-                        "can't load actions file '%s': line %lu: cannot parse rule action from: %s",
-                        csp->config->actions_file[fileid], linenum, buf);
-              continue;
-          }
-          if (!strcmpic(vec[0], "GEOIP") || !strcmpic(vec[0], "IP-CIDR") || !strcmpic(vec[0], "DNS-IP-CIDR")) {
-              if (!strcmpic(vec[0], "GEOIP")) {
-                  perm->geoip = strdup_or_die(vec[1]);
-                  if (MMDB_SUCCESS == MMDB_open(csp->config->mmdbpath, 0, &mmdb)) {
-                      if (po_ip_rules_tail) {
-                          po_ip_rules_tail->next = perm;
-                          po_ip_rules_tail = perm;
-                      } else {
-                          po_ip_rules = perm;
-                          po_ip_rules_tail = po_ip_rules;
-                      }
-                  }
-              } else {
-                  if (!perm->tree) {
-                      radix_tree_t *tree;
-                      if ((tree = radix_tree_create()) == NULL)
-                      {
-                          fclose(fp);
-                          log_error(LOG_LEVEL_FATAL,
-                                    "can't load actions file '%s': out of memory!",
-                                    csp->config->actions_file[fileid]);
-                          return 1; /* never get here */
-                      }
-                      perm->tree = tree;
-                  }
-                  if (!strcmpic(vec[0], "IP-CIDR")) {
-                      // CIDR
-                      char *ipcidr = strdup_or_die(vec[1]);
-                      dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                          loadIPCIDR(ipcidr, perm->tree);
-                      });
-                      if (po_ip_rules_tail) {
-                          po_ip_rules_tail->next = perm;
-                          po_ip_rules_tail = perm;
-                      }else {
-                          po_ip_rules = perm;
-                          po_ip_rules_tail = po_ip_rules;
-                      }
-                  } else if (!strcmpic(vec[0], "DNS-IP-CIDR")) {
-                      // DNS CIDR
-                      char *ipcidr = strdup_or_die(vec[1]);
-                      dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                          loadIPCIDR(ipcidr, perm->tree);
-                      });
-                      if (po_dns_ip_rules_tail) {
-                          po_dns_ip_rules_tail->next = perm;
-                          po_dns_ip_rules_tail = perm;
-                      }else {
-                          po_dns_ip_rules = perm;
-                          po_dns_ip_rules_tail = po_dns_ip_rules;
-                      }
-                  }
-              }
-
-          }else if (!strcmpic(vec[0], "DOMAIN") || !strcmpic(vec[0], "DOMAIN-MATCH") || !strcmpic(vec[0], "URL") || !strcmpic(vec[0], "DOMAIN-SUFFIX")){
-              char pattern[500];
-              if (!strcmpic(vec[0], "DOMAIN-MATCH")) {
-                  sprintf(pattern, ".*%s*.", vec[1]);
-              }else if (!strcmpic(vec[0], "DOMAIN-SUFFIX")) {
-                  sprintf(pattern, ".%s", vec[1]);
-              }else{
-                  sprintf(pattern, "%s", vec[1]);
-              }
-              if (create_pattern_spec(perm->url, pattern))
-              {
-                  log_error(LOG_LEVEL_ERROR,
-                            "can't load actions file '%s': line %lu: cannot create URL or TAG pattern from: %s",
-                            csp->config->actions_file[fileid], linenum, buf);
-                  continue;
-              }
-              if (po_url_rules_tail) {
-                  po_url_rules_tail->next = perm;
-                  po_url_rules_tail = perm;
-              }else {
-                  po_url_rules = perm;
-                  po_url_rules_tail = po_url_rules;
-              }
-          }else{
-              log_error(LOG_LEVEL_ERROR,
-                        "can't load actions file '%s': line %lu: cannot parse IP rule type from: %s",
-                        csp->config->actions_file[fileid], linenum, buf);
-              continue;
-          }
+         /* add it to the list */
+         last_perm->next = perm;
+         last_perm = perm;
       }
       else if (mode == MODE_START_OF_FILE)
       {
@@ -1952,7 +1837,7 @@ char * actions_to_html(const struct client_state *csp,
  *
  * Function    :  current_actions_to_html
  *
- * Description :  Converts a curren action spec to a <br> separated HTML
+ * Description :  Converts a current action spec to a <br> separated HTML
  *                text in which each action is linked to its chapter in
  *                the user manual.
  *

@@ -1,4 +1,3 @@
-const char loadcfg_rcs[] = "$Id: loadcfg.c,v 1.145 2016/01/16 12:33:36 fabiankeil Exp $";
 /*********************************************************************
  *
  * File        :  $Source: /cvsroot/ijbswa/current/loadcfg.c,v $
@@ -8,8 +7,8 @@ const char loadcfg_rcs[] = "$Id: loadcfg.c,v 1.145 2016/01/16 12:33:36 fabiankei
  *                routine to load the configuration and the global
  *                variables it writes to.
  *
- * Copyright   :  Written by and Copyright (C) 2001-2016 the
- *                Privoxy team. http://www.privoxy.org/
+ * Copyright   :  Written by and Copyright (C) 2001-2017 the
+ *                Privoxy team. https://www.privoxy.org/
  *
  *                Based on the Internet Junkbuster originally written
  *                by and Copyright (C) 1997 Anonymous Coders and
@@ -36,7 +35,7 @@ const char loadcfg_rcs[] = "$Id: loadcfg.c,v 1.145 2016/01/16 12:33:36 fabiankei
  *********************************************************************/
 
 
-#include "sp_config.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <sys/types.h>
@@ -53,6 +52,7 @@ const char loadcfg_rcs[] = "$Id: loadcfg.c,v 1.145 2016/01/16 12:33:36 fabiankei
 # ifndef STRICT
 #  define STRICT
 # endif
+# include <winsock2.h>
 # include <windows.h>
 
 # include "win32.h"
@@ -62,10 +62,8 @@ const char loadcfg_rcs[] = "$Id: loadcfg.c,v 1.145 2016/01/16 12:33:36 fabiankei
 
 #else /* ifndef _WIN32 */
 
-#ifndef __OS2__
 # include <unistd.h>
 # include <sys/wait.h>
-#endif
 # include <sys/time.h>
 # include <sys/stat.h>
 # include <signal.h>
@@ -85,8 +83,20 @@ const char loadcfg_rcs[] = "$Id: loadcfg.c,v 1.145 2016/01/16 12:33:36 fabiankei
 #include "urlmatch.h"
 #include "cgi.h"
 #include "gateway.h"
+#ifdef FEATURE_CLIENT_TAGS
+#include "client-tags.h"
+#endif
 
-const char loadcfg_h_rcs[] = LOADCFG_H_VERSION;
+/*
+ * Default number of seconds after which an
+ * open connection will no longer be reused.
+ */
+#define DEFAULT_KEEP_ALIVE_TIMEOUT 180
+
+/*
+ * Default backlog passed to listen().
+ */
+#define DEFAULT_LISTEN_BACKLOG 128
 
 #ifdef FEATURE_TOGGLE
 /* Privoxy is enabled by default. */
@@ -96,18 +106,22 @@ int global_toggle_state = 1;
 /* The filename of the configfile */
 const char *configfile  = NULL;
 
-static struct file_list *current_configfile = NULL;
+/*
+ * CGI functions will later need access to the invocation args,
+ * so we will make argc and argv global.
+ */
+int Argc = 0;
+char * const * Argv = NULL;
 
-int global_mode = 0;
+static struct file_list *current_configfile = NULL;
 
 
 /*
  * This takes the "cryptic" hash of each keyword and aliases them to
  * something a little more readable.  This also makes changing the
- * hash values easier if they should change or the hash algorthm changes.
- * Use the included "hash" program to find out what the hash will be
- * for any string supplied on the command line.  (Or just put it in the
- * config file and read the number from the error message in the log).
+ * hash values easier if they should change or the hash algorithm changes.
+ * To find out the hash for a new directive put it in the config file
+ * and read the number from the error message in the log).
  *
  * Please keep this list sorted alphabetically (but with the Windows
  * console and GUI specific options last).
@@ -118,14 +132,23 @@ int global_mode = 0;
 #define hash_admin_address               4112573064U /* "admin-address" */
 #define hash_allow_cgi_request_crunching  258915987U /* "allow-cgi-request-crunching" */
 #define hash_buffer_limit                1881726070U /* "buffer-limit */
+#define hash_ca_cert_file                1622923720U /* "ca-cert-file" */
+#define hash_ca_directory                1623615670U /* "ca-directory" */
+#define hash_ca_key_file                 1184187891U /* "ca-key-file" */
+#define hash_ca_password                 1184543320U /* "ca-password" */
+#define hash_certificate_directory       1367994217U /* "certificate-directory" */
+#define hash_cipher_list                 1225729316U /* "cipher-list" */
 #define hash_client_header_order         2701453514U /* "client-header-order" */
+#define hash_client_specific_tag         3353703383U /* "client-specific-tag" */
+#define hash_client_tag_lifetime         3239141416U /* "client-tag-lifetime" */
 #define hash_compression_level           2464423563U /* "compression-level" */
 #define hash_confdir                        1978389U /* "confdir" */
-#define hash_mmdbpath                      10609609U /* "mmdbpath" */
 #define hash_connection_sharing          1348841265U /* "connection-sharing" */
+#define hash_cors_allowed_origin         2769345637U /* "cors-allowed-origin" */
 #define hash_debug                            78263U /* "debug" */
 #define hash_default_server_timeout      2530089913U /* "default-server-timeout" */
 #define hash_deny_access                 1227333715U /* "deny-access" */
+#define hash_enable_accept_filter        2909040407U /* "enable-accept-filter" */
 #define hash_enable_edit_actions         2517097536U /* "enable-edit-actions" */
 #define hash_enable_compression          3943696946U /* "enable-compression" */
 #define hash_enable_proxy_authentication_forwarding 4040610791U /* enable-proxy-authentication-forwarding */
@@ -138,21 +161,18 @@ int global_mode = 0;
 #define hash_forward_socks4a             2639958518U /* "forward-socks4a" */
 #define hash_forward_socks5              3963965522U /* "forward-socks5" */
 #define hash_forward_socks5t             2639958542U /* "forward-socks5t" */
-#define hash_global_mode                 1269710751U /* "global_mode" */
-#define hash_default_route_socks4         669642605U /* "default_to_proxy" */
-#define hash_default_route_socks4a        3348213122U /* "default_to_proxy" */
-#define hash_default_route_socks5         669642606U /* "default_to_proxy" */
-#define hash_default_route_socks5t        3348213146U /* "default_to_proxy" */
 #define hash_forwarded_connect_retries    101465292U /* "forwarded-connect-retries" */
 #define hash_handle_as_empty_returns_ok  1444873247U /* "handle-as-empty-doc-returns-ok" */
 #define hash_hostname                      10308071U /* "hostname" */
 #define hash_keep_alive_timeout          3878599515U /* "keep-alive-timeout" */
 #define hash_listen_address              1255650842U /* "listen-address" */
+#define hash_listen_backlog              1255655735U /* "listen-backlog" */
 #define hash_logdir                          422889U /* "logdir" */
 #define hash_logfile                        2114766U /* "logfile" */
 #define hash_max_client_connections      3595884446U /* "max-client-connections" */
 #define hash_permit_access               3587953268U /* "permit-access" */
 #define hash_proxy_info_url              3903079059U /* "proxy-info-url" */
+#define hash_receive_buffer_size         2880297454U /* "receive-buffer-size */
 #define hash_single_threaded             4250084780U /* "single-threaded" */
 #define hash_socket_timeout              1809001761U /* "socket-timeout" */
 #define hash_split_large_cgi_forms        671658948U /* "split-large-cgi-forms" */
@@ -162,6 +182,9 @@ int global_mode = 0;
 #define hash_tolerate_pipelining         1360286620U /* "tolerate-pipelining" */
 #define hash_toggle                          447966U /* "toggle" */
 #define hash_trust_info_url               430331967U /* "trust-info-url" */
+#define hash_trust_x_forwarded_for       2971537414U /* "trust-x-forwarded-for" */
+#define hash_trusted_cgi_referrer        4270883427U /* "trusted-cgi-referrer" */
+#define hash_trusted_cas_file            2679803024U /* "trusted-cas-files" */
 #define hash_trustfile                     56494766U /* "trustfile" */
 #define hash_usermanual                  1416668518U /* "user-manual" */
 #define hash_activity_animation          1817904738U /* "activity-animation" */
@@ -177,6 +200,9 @@ int global_mode = 0;
 
 
 static void savearg(char *command, char *argument, struct configuration_spec * config);
+#ifdef FEATURE_CLIENT_TAGS
+static void free_client_specific_tags(struct client_tag_spec *tag_list);
+#endif
 
 /*********************************************************************
  *
@@ -211,11 +237,9 @@ static void unload_configfile (void * data)
    while (cur_fwd != NULL)
    {
       struct forward_spec * next_fwd = cur_fwd->next;
-      free_pattern_spec(cur_fwd->url);
 
-      freez(cur_fwd->gateway_host);
-      freez(cur_fwd->forward_host);
-      free(cur_fwd);
+      unload_forward_spec(cur_fwd);
+
       cur_fwd = next_fwd;
    }
    config->forward = NULL;
@@ -224,7 +248,6 @@ static void unload_configfile (void * data)
    freez(config->logdir);
    freez(config->templdir);
    freez(config->hostname);
-    freez(config->mmdbpath);
 #ifdef FEATURE_EXTERNAL_FILTERS
    freez(config->temporary_directory);
 #endif
@@ -246,14 +269,30 @@ static void unload_configfile (void * data)
    list_remove_all(config->ordered_client_headers);
 
    freez(config->admin_address);
+   freez(config->cors_allowed_origin);
    freez(config->proxy_info_url);
    freez(config->proxy_args);
    freez(config->usermanual);
+   freez(config->trusted_cgi_referrer);
+
+#ifdef FEATURE_HTTPS_INSPECTION
+   freez(config->ca_password);
+   freez(config->ca_directory);
+   freez(config->ca_cert_file);
+   freez(config->ca_key_file);
+   freez(config->certificate_directory);
+   freez(config->cipher_list);
+   freez(config->trusted_cas_file);
+#endif
 
 #ifdef FEATURE_TRUST
    freez(config->trustfile);
    list_remove_all(config->trust_info);
 #endif /* def FEATURE_TRUST */
+
+#ifdef FEATURE_CLIENT_TAGS
+   free_client_specific_tags(config->client_tags);
+#endif
 
    freez(config);
 }
@@ -281,6 +320,85 @@ void unload_current_config_file(void)
    }
 }
 #endif
+
+
+#ifdef FEATURE_CLIENT_TAGS
+/*********************************************************************
+ *
+ * Function    :  register_tag
+ *
+ * Description :  Registers a client-specific-tag and its description
+ *
+ * Parameters  :
+ *          1  :  config: The tag list
+ *          2  :  name:  The name of the client-specific-tag
+ *          3  :  description: The human-readable description for the tag
+ *
+ * Returns     :  N/A
+ *
+ *********************************************************************/
+static void register_tag(struct client_tag_spec *tag_list,
+   const char *name, const char *description)
+{
+   struct client_tag_spec *new_tag;
+   struct client_tag_spec *last_tag;
+
+   last_tag = tag_list;
+   while (last_tag->next != NULL)
+   {
+      last_tag = last_tag->next;
+   }
+   if (last_tag->name == NULL)
+   {
+      /* First entry */
+      new_tag = last_tag;
+   }
+   else
+   {
+      new_tag = zalloc_or_die(sizeof(struct client_tag_spec));
+   }
+   new_tag->name = strdup_or_die(name);
+   new_tag->description = strdup_or_die(description);
+   if (new_tag != last_tag)
+   {
+      last_tag->next = new_tag;
+   }
+}
+
+
+/*********************************************************************
+ *
+ * Function    :  free_client_specific_tags
+ *
+ * Description :  Frees client-specific tags and their descriptions
+ *
+ * Parameters  :
+ *          1  :  tag_list: The tag list to free
+ *
+ * Returns     :  N/A
+ *
+ *********************************************************************/
+static void free_client_specific_tags(struct client_tag_spec *tag_list)
+{
+   struct client_tag_spec *this_tag;
+   struct client_tag_spec *next_tag;
+
+   next_tag = tag_list;
+   do
+   {
+      this_tag = next_tag;
+      next_tag = next_tag->next;
+
+      freez(this_tag->name);
+      freez(this_tag->description);
+
+      if (this_tag != tag_list)
+      {
+         freez(this_tag);
+      }
+   } while (next_tag != NULL);
+}
+#endif /* def FEATURE_CLIENT_TAGS */
 
 
 /*********************************************************************
@@ -463,11 +581,15 @@ struct configuration_spec * load_config(void)
    struct file_list *fs;
    unsigned long linenum = 0;
    int i;
-   char *logfile = NULL;
+   char *logfile          = NULL;
+#ifdef FEATURE_HTTPS_INSPECTION
+   char *ca_cert_file     = NULL;
+   char *ca_key_file      = NULL;
+   char *ca_directory     = NULL;
+   char *trusted_cas_file = NULL;
+   char *certificate_directory = NULL;
+#endif
 
-//    if (current_configfile) {
-//        return ((struct configuration_spec *)current_configfile->f);
-//    }
    if (!check_file_changed(current_configfile, configfile, &fs))
    {
       /* No need to load */
@@ -489,15 +611,7 @@ struct configuration_spec * load_config(void)
    global_toggle_state = 1;
 #endif /* def FEATURE_TOGGLE */
 
-   fs->f = config = (struct configuration_spec *)zalloc(sizeof(*config));
-
-   if (NULL == config)
-   {
-      freez(fs->filename);
-      freez(fs);
-      log_error(LOG_LEVEL_FATAL, "can't allocate memory for configuration");
-      return NULL;
-   }
+   fs->f = config = zalloc_or_die(sizeof(*config));
 
    /*
     * This is backwards from how it's usually done.
@@ -515,9 +629,28 @@ struct configuration_spec * load_config(void)
     */
    config->multi_threaded            = 1;
    config->buffer_limit              = 4096 * 1024;
-   config->usermanual                = strdup(USER_MANUAL_URL);
-   config->proxy_args                = strdup("");
+   config->receive_buffer_size       = BUFFER_SIZE;
+   config->usermanual                = strdup_or_die(USER_MANUAL_URL);
+   config->proxy_args                = strdup_or_die("");
    config->forwarded_connect_retries = 0;
+#ifdef FEATURE_HTTPS_INSPECTION
+   config->ca_password               = strdup("");
+   ca_cert_file                      = strdup("cacert.crt");
+   ca_key_file                       = strdup("cakey.pem");
+   ca_directory                      = strdup("./CA");
+   trusted_cas_file                  = strdup("trustedCAs.pem");
+   certificate_directory             = strdup("./certs");
+#endif
+
+#ifdef FEATURE_CLIENT_TAGS
+   config->client_tag_lifetime       = 60;
+#endif
+   config->trust_x_forwarded_for     = 0;
+#if defined(FEATURE_ACCEPT_FILTER) && defined(SO_ACCEPTFILTER)
+   config->enable_accept_filter      = 0;
+#endif
+   config->listen_backlog            = DEFAULT_LISTEN_BACKLOG;
+   config->trusted_cgi_referrer      = NULL;
    /*
     * 128 client sockets ought to be enough for everybody who can't
     * be bothered to read the documentation to figure out how to
@@ -544,6 +677,7 @@ struct configuration_spec * load_config(void)
    config->compression_level         = 1;
 #endif
    config->feature_flags            &= ~RUNTIME_FEATURE_TOLERATE_PIPELINING;
+   config->cors_allowed_origin       = NULL;
 
    configfp = fopen(configfile, "r");
    if (NULL == configfp)
@@ -562,8 +696,6 @@ struct configuration_spec * load_config(void)
       struct access_control_list *cur_acl;
 #endif /* def FEATURE_ACL */
       struct forward_spec *cur_fwd;
-       struct forward_ip_spec *cur_fwd_ip;
-
       int vec_count;
       char *vec[3];
       unsigned int directive_hash;
@@ -627,7 +759,7 @@ struct configuration_spec * load_config(void)
                   "(You can increase this limit by changing MAX_AF_FILES in project.h and recompiling).",
                   MAX_AF_FILES);
             }
-            config->actions_file_short[i] = strdup(arg);
+            config->actions_file_short[i] = strdup_or_die(arg);
             config->actions_file[i] = make_path(config->confdir, arg);
 
             break;
@@ -650,7 +782,7 @@ struct configuration_spec * load_config(void)
  * *************************************************************************/
          case hash_admin_address :
             freez(config->admin_address);
-            config->admin_address = strdup(arg);
+            config->admin_address = strdup_or_die(arg);
             break;
 
 /* *************************************************************************
@@ -683,20 +815,66 @@ struct configuration_spec * load_config(void)
             break;
 
 /* *************************************************************************
+ * client-specific-tag tag-name description
+ * *************************************************************************/
+#ifdef FEATURE_CLIENT_TAGS
+         case hash_client_specific_tag:
+            {
+               char *name;
+               char *description;
+
+               name = arg;
+               description = strstr(arg, " ");
+               if (description == NULL)
+               {
+                  log_error(LOG_LEVEL_FATAL,
+                     "client-specific-tag '%s' lacks a description.", name);
+               }
+               *description = '\0';
+               /*
+                * The length is limited because we don't want truncated
+                * HTML caused by the cgi interface using static buffer
+                * sizes.
+                */
+               if (strlen(name) > CLIENT_TAG_LENGTH_MAX)
+               {
+                  log_error(LOG_LEVEL_FATAL,
+                     "client-specific-tag '%s' is longer than %d characters.",
+                     name, CLIENT_TAG_LENGTH_MAX);
+               }
+               description++;
+               register_tag(config->client_tags, name, description);
+            }
+            break;
+#endif /* def FEATURE_CLIENT_TAGS */
+
+/* *************************************************************************
+ * client-tag-lifetime ttl
+ * *************************************************************************/
+#ifdef FEATURE_CLIENT_TAGS
+         case hash_client_tag_lifetime:
+         {
+            int ttl = parse_numeric_value(cmd, arg);
+            if (0 <= ttl)
+            {
+               config->client_tag_lifetime = (unsigned)ttl;
+            }
+            else
+            {
+               log_error(LOG_LEVEL_FATAL,
+                  "client-tag-lifetime can't be negative.");
+            }
+            break;
+         }
+#endif /* def FEATURE_CLIENT_TAGS */
+
+/* *************************************************************************
  * confdir directory-name
  * *************************************************************************/
          case hash_confdir :
             freez(config->confdir);
             config->confdir = make_path(NULL, arg);
             break;
-
-/* *************************************************************************
-* mmdb path
-* *************************************************************************/
-        case hash_mmdbpath :
-          freez(config->mmdbpath);
-          config->mmdbpath = make_path(NULL, arg);
-          break;
 
 /* *************************************************************************
  * compression-level 0-9
@@ -707,7 +885,7 @@ struct configuration_spec * load_config(void)
             int compression_level = parse_numeric_value(cmd, arg);
             if (-1 <= compression_level && compression_level <= 9)
             {
-               config->compression_level = compression_level;;
+               config->compression_level = compression_level;
             }
             else
             {
@@ -733,6 +911,18 @@ struct configuration_spec * load_config(void)
             }
             break;
 #endif
+
+/* *************************************************************************
+ * cors-allowed-origin http://www.example.org
+ * *************************************************************************/
+         case hash_cors_allowed_origin :
+            /*
+             * We don't validate the specified referrer as
+             * it's only used for string comparison.
+             */
+            freez(config->cors_allowed_origin);
+            config->cors_allowed_origin = strdup_or_die(arg);
+            break;
 
 /* *************************************************************************
  * debug n
@@ -781,14 +971,7 @@ struct configuration_spec * load_config(void)
             }
 
             /* allocate a new node */
-            cur_acl = (struct access_control_list *) zalloc(sizeof(*cur_acl));
-
-            if (cur_acl == NULL)
-            {
-               log_error(LOG_LEVEL_FATAL, "can't allocate memory for configuration");
-               /* Never get here - LOG_LEVEL_FATAL causes program exit */
-               break;
-            }
+            cur_acl = zalloc_or_die(sizeof(*cur_acl));
             cur_acl->action = ACL_DENY;
 
             if (acl_addr(vec[0], cur_acl->src) < 0)
@@ -843,6 +1026,15 @@ struct configuration_spec * load_config(void)
 
             break;
 #endif /* def FEATURE_ACL */
+
+#if defined(FEATURE_ACCEPT_FILTER) && defined(SO_ACCEPTFILTER)
+/* *************************************************************************
+ * enable-accept-filter 0|1
+ * *************************************************************************/
+         case hash_enable_accept_filter :
+            config->enable_accept_filter = parse_toggle_state(cmd, arg);
+            break;
+#endif /* defined(FEATURE_ACCEPT_FILTER) && defined(SO_ACCEPTFILTER) */
 
 /* *************************************************************************
  * enable-edit-actions 0|1
@@ -956,7 +1148,7 @@ struct configuration_spec * load_config(void)
                   "(You can increase this limit by changing MAX_AF_FILES in project.h and recompiling).",
                   MAX_AF_FILES);
             }
-            config->re_filterfile_short[i] = strdup(arg);
+            config->re_filterfile_short[i] = strdup_or_die(arg);
             config->re_filterfile[i] = make_path(config->confdir, arg);
 
             break;
@@ -979,14 +1171,7 @@ struct configuration_spec * load_config(void)
             }
 
             /* allocate a new node */
-            cur_fwd = zalloc(sizeof(*cur_fwd));
-            if (cur_fwd == NULL)
-            {
-               log_error(LOG_LEVEL_FATAL, "can't allocate memory for configuration");
-               /* Never get here - LOG_LEVEL_FATAL causes program exit */
-               break;
-            }
-
+            cur_fwd = zalloc_or_die(sizeof(*cur_fwd));
             cur_fwd->type = SOCKS_NONE;
 
             /* Save the URL pattern */
@@ -1007,9 +1192,11 @@ struct configuration_spec * load_config(void)
             if (strcmp(p, ".") != 0)
             {
                cur_fwd->forward_port = 8000;
-               parse_forwarder_address(p, &cur_fwd->forward_host,
-                  &cur_fwd->forward_port, NULL, NULL);
+               parse_forwarder_address(p,
+                  &cur_fwd->forward_host, &cur_fwd->forward_port,
+                  NULL, NULL);
             }
+
             /* Add to list. */
             cur_fwd->next = config->forward;
             config->forward = cur_fwd;
@@ -1034,14 +1221,7 @@ struct configuration_spec * load_config(void)
             }
 
             /* allocate a new node */
-            cur_fwd = zalloc(sizeof(*cur_fwd));
-            if (cur_fwd == NULL)
-            {
-               log_error(LOG_LEVEL_FATAL, "can't allocate memory for configuration");
-               /* Never get here - LOG_LEVEL_FATAL causes program exit */
-               break;
-            }
-
+            cur_fwd = zalloc_or_die(sizeof(*cur_fwd));
             cur_fwd->type = SOCKS_4;
 
             /* Save the URL pattern */
@@ -1063,8 +1243,9 @@ struct configuration_spec * load_config(void)
             if (strcmp(p, ".") != 0)
             {
                cur_fwd->gateway_port = 1080;
-               parse_forwarder_address(p, &cur_fwd->gateway_host,
-                  &cur_fwd->gateway_port, NULL, NULL);
+               parse_forwarder_address(p,
+                  &cur_fwd->gateway_host, &cur_fwd->gateway_port,
+                  NULL, NULL);
             }
 
             /* Parse the parent HTTP proxy host[:port] */
@@ -1073,12 +1254,14 @@ struct configuration_spec * load_config(void)
             if (strcmp(p, ".") != 0)
             {
                cur_fwd->forward_port = 8000;
-               parse_forwarder_address(p, &cur_fwd->forward_host,
-                  &cur_fwd->forward_port, NULL, NULL);
+               parse_forwarder_address(p,
+                  &cur_fwd->forward_host, &cur_fwd->forward_port,
+                  NULL, NULL);
             }
-              /* Add to list. */
-              cur_fwd->next = config->forward;
-              config->forward = cur_fwd;
+
+            /* Add to list. */
+            cur_fwd->next = config->forward;
+            config->forward = cur_fwd;
 
             break;
 
@@ -1105,13 +1288,7 @@ struct configuration_spec * load_config(void)
             }
 
             /* allocate a new node */
-            cur_fwd = zalloc(sizeof(*cur_fwd));
-            if (cur_fwd == NULL)
-            {
-               log_error(LOG_LEVEL_FATAL, "can't allocate memory for configuration");
-               /* Never get here - LOG_LEVEL_FATAL causes program exit */
-               break;
-            }
+            cur_fwd = zalloc_or_die(sizeof(*cur_fwd));
 
             if (directive_hash == hash_forward_socks4a)
             {
@@ -1147,8 +1324,8 @@ struct configuration_spec * load_config(void)
 
             cur_fwd->gateway_port = 1080;
             parse_forwarder_address(p,
-                             &cur_fwd->gateway_host, &cur_fwd->gateway_port,
-                             &cur_fwd->auth_username, &cur_fwd->auth_password);
+               &cur_fwd->gateway_host, &cur_fwd->gateway_port,
+               &cur_fwd->auth_username, &cur_fwd->auth_password);
 
             /* Parse the parent HTTP proxy host[:port] */
             p = vec[2];
@@ -1156,20 +1333,16 @@ struct configuration_spec * load_config(void)
             if (strcmp(p, ".") != 0)
             {
                cur_fwd->forward_port = 8000;
-               parse_forwarder_address(p, &cur_fwd->forward_host,
-                  &cur_fwd->forward_port, NULL, NULL);
+               parse_forwarder_address(p,
+                  &cur_fwd->forward_host, &cur_fwd->forward_port,
+                  NULL, NULL);
             }
 
-              /* Add to list. */
-              cur_fwd->next = config->forward;
-              config->forward = cur_fwd;
+            /* Add to list. */
+            cur_fwd->next = config->forward;
+            config->forward = cur_fwd;
 
             break;
-
-          case hash_global_mode:
-              global_mode = parse_toggle_state(cmd, arg);
-              break;
-
 
 /* *************************************************************************
  * forwarded-connect-retries n
@@ -1203,11 +1376,7 @@ struct configuration_spec * load_config(void)
  * *************************************************************************/
          case hash_hostname :
             freez(config->hostname);
-            config->hostname = strdup(arg);
-            if (NULL == config->hostname)
-            {
-               log_error(LOG_LEVEL_FATAL, "Out of memory saving hostname.");
-            }
+            config->hostname = strdup_or_die(arg);
             break;
 
 /* *************************************************************************
@@ -1246,11 +1415,19 @@ struct configuration_spec * load_config(void)
                   "(You can increase this limit by changing MAX_LISTENING_SOCKETS in project.h and recompiling).",
                   MAX_LISTENING_SOCKETS);
             }
-            config->haddr[i] = strdup(arg);
-            if (NULL == config->haddr[i])
-            {
-               log_error(LOG_LEVEL_FATAL, "Out of memory while copying listening address");
-            }
+            config->haddr[i] = strdup_or_die(arg);
+            break;
+
+/* *************************************************************************
+ * listen-backlog n
+ * *************************************************************************/
+         case hash_listen_backlog :
+            /*
+             * We don't enfore an upper or lower limit because on
+             * many platforms all values are valid and negative
+             * number mean "use the highest value allowed".
+             */
+            config->listen_backlog = parse_numeric_value(cmd, arg);
             break;
 
 /* *************************************************************************
@@ -1266,11 +1443,14 @@ struct configuration_spec * load_config(void)
  * In logdir by default
  * *************************************************************************/
          case hash_logfile :
+            if (daemon_mode)
+            {
                logfile = make_path(config->logdir, arg);
                if (NULL == logfile)
                {
                   log_error(LOG_LEVEL_FATAL, "Out of memory while creating logfile path");
                }
+            }
             break;
 
 /* *************************************************************************
@@ -1279,11 +1459,43 @@ struct configuration_spec * load_config(void)
          case hash_max_client_connections :
          {
             int max_client_connections = parse_numeric_value(cmd, arg);
-            if (0 <= max_client_connections)
+
+#if !defined(_WIN32) && !defined(HAVE_POLL)
+            /*
+             * Reject values below 1 for obvious reasons and values above
+             * FD_SETSIZE/2 because Privoxy needs two sockets to serve
+             * client connections that need forwarding.
+             *
+             * We ignore the fact that the first three file descriptors
+             * are usually set to /dev/null, one is used for logging
+             * and yet another file descriptor is required to load
+             * config files.
+             */
+            if ((max_client_connections < 1) || (FD_SETSIZE/2 < max_client_connections))
             {
-               /* XXX: log error */
-               config->max_client_connections = max_client_connections;
+               log_error(LOG_LEVEL_FATAL, "max-client-connections value %d"
+                  " is invalid. Value needs to be above 1 and below %d"
+                  " (FD_SETSIZE/2).", max_client_connections, FD_SETSIZE/2);
             }
+#else
+            /*
+             * The Windows libc uses FD_SETSIZE for an array used
+             * by select(), but has no problems with file descriptors
+             * above the limit as long as no more than FD_SETSIZE are
+             * passed to select().
+             * https://msdn.microsoft.com/en-us/library/windows/desktop/ms739169%28v=vs.85%29.aspx
+             *
+             * On platforms were we use poll() we don't have to enforce
+             * an upper connection limit either.
+             */
+            if (max_client_connections < 1)
+            {
+               log_error(LOG_LEVEL_FATAL, "max-client-connections value"
+                  " has to be a number above 1. %d is invalid.",
+                  max_client_connections);
+            }
+#endif
+            config->max_client_connections = max_client_connections;
             break;
          }
 
@@ -1307,14 +1519,7 @@ struct configuration_spec * load_config(void)
             }
 
             /* allocate a new node */
-            cur_acl = (struct access_control_list *) zalloc(sizeof(*cur_acl));
-
-            if (cur_acl == NULL)
-            {
-               log_error(LOG_LEVEL_FATAL, "can't allocate memory for configuration");
-               /* Never get here - LOG_LEVEL_FATAL causes program exit */
-               break;
-            }
+            cur_acl = zalloc_or_die(sizeof(*cur_acl));
             cur_acl->action = ACL_PERMIT;
 
             if (acl_addr(vec[0], cur_acl->src) < 0)
@@ -1375,7 +1580,22 @@ struct configuration_spec * load_config(void)
  * *************************************************************************/
          case hash_proxy_info_url :
             freez(config->proxy_info_url);
-            config->proxy_info_url = strdup(arg);
+            config->proxy_info_url = strdup_or_die(arg);
+            break;
+
+
+/* *************************************************************************
+ * receive-buffer-size n
+ * *************************************************************************/
+         case hash_receive_buffer_size :
+            config->receive_buffer_size = (size_t)parse_numeric_value(cmd, arg);
+            if (config->receive_buffer_size < BUFFER_SIZE)
+            {
+               log_error(LOG_LEVEL_INFO,
+                  "receive-buffer-size %lu seems low and may cause problems."
+                  "Consider setting it to at least %d.",
+                  config->receive_buffer_size, BUFFER_SIZE);
+            }
             break;
 
 /* *************************************************************************
@@ -1467,6 +1687,25 @@ struct configuration_spec * load_config(void)
 #endif /* def FEATURE_TRUST */
 
 /* *************************************************************************
+ * trust-x-forwarded-for (0|1)
+ * *************************************************************************/
+         case hash_trust_x_forwarded_for :
+            config->trust_x_forwarded_for = parse_toggle_state(cmd, arg);
+            break;
+
+/* *************************************************************************
+ * trusted-cgi-referrer http://www.example.org/some/path.html
+ * *************************************************************************/
+         case hash_trusted_cgi_referrer :
+            /*
+             * We don't validate the specified referrer as
+             * it's only used for string comparison.
+             */
+            freez(config->trusted_cgi_referrer);
+            config->trusted_cgi_referrer = strdup_or_die(arg);
+            break;
+
+/* *************************************************************************
  * trustfile filename
  * (In confdir by default.)
  * *************************************************************************/
@@ -1487,8 +1726,100 @@ struct configuration_spec * load_config(void)
              * for the directives that were already parsed. Lame.
              */
             freez(config->usermanual);
-            config->usermanual = strdup(arg);
+            config->usermanual = strdup_or_die(arg);
             break;
+
+#ifdef FEATURE_HTTPS_INSPECTION
+/* *************************************************************************
+ * ca private key file password
+ * *************************************************************************/
+         case hash_ca_password:
+            freez(config->ca_password);
+            config->ca_password = strdup(arg);
+            break;
+
+/* *************************************************************************
+ * ca-directory directory
+ * *************************************************************************/
+         case hash_ca_directory:
+            freez(ca_directory);
+            ca_directory = make_path(NULL, arg);
+
+            if (NULL == ca_directory)
+            {
+               log_error(LOG_LEVEL_FATAL, "Out of memory while creating ca dir path");
+            }
+
+            break;
+
+/* *************************************************************************
+ * ca cert file ca-cert-file
+ * In ca dir by default
+ * *************************************************************************/
+         case hash_ca_cert_file:
+            freez(ca_cert_file);
+            ca_cert_file = make_path(config->ca_directory, arg);
+
+            if (NULL == ca_cert_file)
+            {
+               log_error(LOG_LEVEL_FATAL, "Out of memory while creating ca certificate file path");
+            }
+
+            break;
+
+/* *************************************************************************
+ * ca key file ca-key-file
+ * In ca dir by default
+ * *************************************************************************/
+         case hash_ca_key_file:
+            freez(ca_key_file);
+            ca_key_file = make_path(config->ca_directory, arg);
+
+            if (NULL == ca_key_file)
+            {
+               log_error(LOG_LEVEL_FATAL, "Out of memory while creating ca key file path");
+            }
+
+            break;
+
+/* *************************************************************************
+ * certificate-directory directory
+ * *************************************************************************/
+         case hash_certificate_directory:
+            freez(certificate_directory);
+            certificate_directory = make_path(NULL, arg);
+
+            if (NULL == certificate_directory)
+            {
+               log_error(LOG_LEVEL_FATAL,
+                  "Out of memory while creating certificate directory path");
+            }
+
+            break;
+
+/* *************************************************************************
+ * cipher-list list-of-ciphers
+ * *************************************************************************/
+         case hash_cipher_list:
+            freez(config->cipher_list);
+            config->cipher_list = strdup_or_die(arg);
+
+            break;
+
+/* *************************************************************************
+ * trusted CAs file name trusted-cas-file
+ * *************************************************************************/
+         case hash_trusted_cas_file:
+            freez(trusted_cas_file);
+            trusted_cas_file = make_path(config->ca_directory, arg);
+
+            if (NULL == trusted_cas_file)
+            {
+               log_error(LOG_LEVEL_FATAL, "Out of memory while creating trusted CAs file path");
+            }
+
+            break;
+#endif
 
 /* *************************************************************************
  * Win32 Console options:
@@ -1651,11 +1982,44 @@ struct configuration_spec * load_config(void)
    set_debug_level(config->debug);
 
    freez(config->logfile);
-   if (NULL != logfile) {
-      config->logfile = logfile;
-      init_error_log("Privoxy", config->logfile);
+
+   if (daemon_mode)
+   {
+      if (NULL != logfile)
+      {
+         config->logfile = logfile;
+         init_error_log(Argv[0], config->logfile);
+      }
+      else
+      {
+         disable_logging();
+      }
    }
 
+#ifdef FEATURE_HTTPS_INSPECTION
+   /*
+    * Setting SSL parameters from loaded values into structures
+    */
+   freez(config->ca_directory);
+   config->ca_directory = make_path(NULL, ca_directory);
+   freez(ca_directory);
+
+   freez(config->ca_cert_file);
+   config->ca_cert_file = make_path(config->ca_directory, ca_cert_file);
+   freez(ca_cert_file);
+
+   freez(config->ca_key_file);
+   config->ca_key_file  = make_path(config->ca_directory, ca_key_file);
+   freez(ca_key_file);
+
+   freez(config->trusted_cas_file);
+   config->trusted_cas_file = make_path(config->ca_directory, trusted_cas_file);
+   freez(trusted_cas_file);
+
+   freez(config->certificate_directory);
+   config->certificate_directory = make_path(NULL, certificate_directory);
+   freez(certificate_directory);
+#endif
 #ifdef FEATURE_CONNECTION_KEEP_ALIVE
    if (config->default_server_timeout > config->keep_alive_timeout)
    {
@@ -1669,11 +2033,7 @@ struct configuration_spec * load_config(void)
 #ifdef FEATURE_CONNECTION_SHARING
    if (config->feature_flags & RUNTIME_FEATURE_CONNECTION_KEEP_ALIVE)
    {
-      if (config->multi_threaded)
-      {
-         set_keep_alive_timeout(config->keep_alive_timeout);
-      }
-      else
+      if (!config->multi_threaded)
       {
          /*
           * While we could use keep-alive without multiple threads
@@ -1720,30 +2080,22 @@ struct configuration_spec * load_config(void)
 
    if (NULL == config->haddr[0])
    {
-      config->haddr[0] = strdup(HADDR_DEFAULT);
-      if (NULL == config->haddr[0])
-      {
-         log_error(LOG_LEVEL_FATAL, "Out of memory while copying default listening address");
-      }
+      config->haddr[0] = strdup_or_die(HADDR_DEFAULT);
    }
 
-    for (i = 0; i < MAX_LISTENING_SOCKETS; i++)
-    {
-        config->hport[i] = -1;
-    }
    for (i = 0; i < MAX_LISTENING_SOCKETS && NULL != config->haddr[i]; i++)
    {
       if ((*config->haddr[i] == '[')
          && (NULL != (p = strchr(config->haddr[i], ']')))
          && (p[1] == ':')
-         && (0 <= (config->hport[i] = atoi(p + 2))))
+         && (0 < (config->hport[i] = atoi(p + 2))))
       {
          *p = '\0';
          memmove((void *)config->haddr[i], config->haddr[i] + 1,
             (size_t)(p - config->haddr[i]));
       }
       else if (NULL != (p = strchr(config->haddr[i], ':'))
-         && (0 <= (config->hport[i] = atoi(p + 1))))
+         && (0 < (config->hport[i] = atoi(p + 1))))
       {
          *p = '\0';
       }
@@ -1769,7 +2121,7 @@ struct configuration_spec * load_config(void)
     *
     * Need to set up a fake csp, so they can get to the config.
     */
-   fake_csp = (struct client_state *) zalloc (sizeof(*fake_csp));
+   fake_csp = zalloc_or_die(sizeof(*fake_csp));
    fake_csp->config = config;
 
    if (run_loader(fake_csp))
@@ -1796,6 +2148,46 @@ struct configuration_spec * load_config(void)
 #endif /* defined(_WIN32) && !defined (_WIN_CONSOLE) */
 /* FIXME: end kludge */
 
+
+   if (current_configfile == NULL)
+   {
+      config->need_bind = 1;
+   }
+   else
+   {
+      struct configuration_spec * oldcfg = (struct configuration_spec *)
+                                           current_configfile->f;
+      /*
+       * Check if config->haddr[i],hport[i] == oldcfg->haddr[i],hport[i]
+       */
+      config->need_bind = 0;
+
+      for (i = 0; i < MAX_LISTENING_SOCKETS; i++)
+      {
+         if (config->hport[i] != oldcfg->hport[i])
+         {
+            config->need_bind = 1;
+         }
+         else if (config->haddr[i] == NULL)
+         {
+            if (oldcfg->haddr[i] != NULL)
+            {
+               config->need_bind = 1;
+            }
+         }
+         else if (oldcfg->haddr[i] == NULL)
+         {
+            config->need_bind = 1;
+         }
+         else if (0 != strcmp(config->haddr[i], oldcfg->haddr[i]))
+         {
+            config->need_bind = 1;
+         }
+      }
+
+      current_configfile->unloader = unload_configfile;
+   }
+
    fs->next = files->next;
    files->next = fs;
 
@@ -1812,7 +2204,7 @@ struct configuration_spec * load_config(void)
  * Description :  Called from `load_config'.  It saves each non-empty
  *                and non-comment line from config into
  *                config->proxy_args.  This is used to create the
- *                show-proxy-args page.  On error, frees
+ *                show-status page.  On error, frees
  *                config->proxy_args and sets it to NULL
  *
  * Parameters  :
@@ -1835,7 +2227,7 @@ static void savearg(char *command, char *argument, struct configuration_spec * c
     * Add config option name embedded in
     * link to its section in the user-manual
     */
-   buf = strdup("\n<a href=\"");
+   buf = strdup_or_die("\n<a href=\"");
    if (!strncmpic(config->usermanual, "file://", 7) ||
        !strncmpic(config->usermanual, "http", 4))
    {

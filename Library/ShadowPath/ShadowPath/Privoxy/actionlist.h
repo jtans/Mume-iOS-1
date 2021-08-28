@@ -13,7 +13,7 @@
  *                    DEFINE_ACTION_ALIAS
  *
  * Copyright   :  Written by and Copyright (C) 2001-2014 the
- *                Privoxy team. http://www.privoxy.org/
+ *                Privoxy team. https://www.privoxy.org/
  *
  *                Based on the Internet Junkbuster originally written
  *                by and Copyright (C) 1997 Anonymous Coders and
@@ -56,6 +56,7 @@ DEFINE_CGI_PARAM_NO_RADIO("block",                      ACTION_BLOCK, ACTION_STR
 DEFINE_ACTION_STRING     ("change-x-forwarded-for",     ACTION_CHANGE_X_FORWARDED_FOR,  ACTION_STRING_CHANGE_X_FORWARDED_FOR)
 DEFINE_CGI_PARAM_RADIO   ("change-x-forwarded-for",     ACTION_CHANGE_X_FORWARDED_FOR,  ACTION_STRING_CHANGE_X_FORWARDED_FOR, "block", 0)
 DEFINE_CGI_PARAM_RADIO   ("change-x-forwarded-for",     ACTION_CHANGE_X_FORWARDED_FOR,  ACTION_STRING_CHANGE_X_FORWARDED_FOR, "add", 1)
+DEFINE_ACTION_MULTI      ("client-body-filter",         ACTION_MULTI_CLIENT_BODY_FILTER)
 DEFINE_ACTION_MULTI      ("client-header-filter",       ACTION_MULTI_CLIENT_HEADER_FILTER)
 DEFINE_ACTION_MULTI      ("client-header-tagger",       ACTION_MULTI_CLIENT_HEADER_TAGGER)
 DEFINE_ACTION_STRING     ("content-type-overwrite",     ACTION_CONTENT_TYPE_OVERWRITE, ACTION_STRING_CONTENT_TYPE)
@@ -69,6 +70,8 @@ DEFINE_ACTION_STRING     ("crunch-server-header",       ACTION_CRUNCH_SERVER_HEA
 DEFINE_CGI_PARAM_NO_RADIO("crunch-server-header",       ACTION_CRUNCH_SERVER_HEADER, ACTION_STRING_SERVER_HEADER,          "X-Whatever:")
 DEFINE_ACTION_STRING     ("deanimate-gifs",             ACTION_DEANIMATE,       ACTION_STRING_DEANIMATE)
 DEFINE_CGI_PARAM_RADIO   ("deanimate-gifs",             ACTION_DEANIMATE,       ACTION_STRING_DEANIMATE,     "first", 0)
+DEFINE_ACTION_STRING     ("delay-response",             ACTION_DELAY_RESPONSE,  ACTION_STRING_DELAY_RESPONSE)
+DEFINE_CGI_PARAM_NO_RADIO("delay-response",             ACTION_DELAY_RESPONSE,  ACTION_STRING_DELAY_RESPONSE, "100")
 DEFINE_CGI_PARAM_RADIO   ("deanimate-gifs",             ACTION_DEANIMATE,       ACTION_STRING_DEANIMATE,     "last",  1)
 DEFINE_ACTION_BOOL       ("downgrade-http-version",     ACTION_DOWNGRADE)
 #ifdef FEATURE_EXTERNAL_FILTERS
@@ -83,13 +86,6 @@ DEFINE_ACTION_MULTI      ("filter",                     ACTION_MULTI_FILTER)
 DEFINE_ACTION_BOOL       ("force-text-mode",            ACTION_FORCE_TEXT_MODE)
 DEFINE_ACTION_STRING     ("forward-override",           ACTION_FORWARD_OVERRIDE, ACTION_STRING_FORWARD_OVERRIDE)
 DEFINE_CGI_PARAM_CUSTOM  ("forward-override",           ACTION_FORWARD_OVERRIDE, ACTION_STRING_FORWARD_OVERRIDE, "forward .")
-
-// For Potatso Rules
-// URL Rules
-DEFINE_ACTION_STRING     ("forward-rule",               ACTION_FORWARD_RULE, ACTION_STRING_FORWARD_RULE)
-// IP Rules
-DEFINE_ACTION_STRING     ("forward-resolved-ip",        ACTION_FORWARD_RESOLVED_IP, ACTION_STRING_FORWARD_RESOLVED_IP)
-
 DEFINE_ACTION_BOOL       ("handle-as-empty-document",   ACTION_HANDLE_AS_EMPTY_DOCUMENT)
 DEFINE_ACTION_BOOL       ("handle-as-image",            ACTION_IMAGE)
 DEFINE_ACTION_STRING     ("hide-accept-language",       ACTION_HIDE_ACCEPT_LANGUAGE, ACTION_STRING_LANGUAGE)
@@ -112,6 +108,10 @@ DEFINE_CGI_PARAM_RADIO   ("hide-referrer",              ACTION_HIDE_REFERER,    
 DEFINE_CGI_PARAM_CUSTOM  ("hide-referrer",              ACTION_HIDE_REFERER,    ACTION_STRING_REFERER,       "http://www.privoxy.org/")
 DEFINE_ACTION_STRING     ("hide-user-agent",            ACTION_HIDE_USER_AGENT, ACTION_STRING_USER_AGENT)
 DEFINE_CGI_PARAM_NO_RADIO("hide-user-agent",            ACTION_HIDE_USER_AGENT, ACTION_STRING_USER_AGENT,    "Privoxy " VERSION)
+#ifdef FEATURE_HTTPS_INSPECTION
+DEFINE_ACTION_BOOL       ("https-inspection",           ACTION_HTTPS_INSPECTION)
+DEFINE_ACTION_BOOL       ("ignore-certificate-errors",  ACTION_IGNORE_CERTIFICATE_ERRORS)
+#endif
 DEFINE_ACTION_STRING     ("limit-connect",              ACTION_LIMIT_CONNECT,   ACTION_STRING_LIMIT_CONNECT)
 DEFINE_CGI_PARAM_NO_RADIO("limit-connect",              ACTION_LIMIT_CONNECT,   ACTION_STRING_LIMIT_CONNECT,  "443")
 DEFINE_ACTION_STRING     ("limit-cookie-lifetime",      ACTION_LIMIT_COOKIE_LIFETIME, ACTION_STRING_LIMIT_COOKIE_LIFETIME)
@@ -130,6 +130,7 @@ DEFINE_ACTION_STRING     ("set-image-blocker",          ACTION_IMAGE_BLOCKER,   
 DEFINE_CGI_PARAM_RADIO   ("set-image-blocker",          ACTION_IMAGE_BLOCKER,   ACTION_STRING_IMAGE_BLOCKER, "pattern", 1)
 DEFINE_CGI_PARAM_RADIO   ("set-image-blocker",          ACTION_IMAGE_BLOCKER,   ACTION_STRING_IMAGE_BLOCKER, "blank", 0)
 DEFINE_CGI_PARAM_CUSTOM  ("set-image-blocker",          ACTION_IMAGE_BLOCKER,   ACTION_STRING_IMAGE_BLOCKER,  CGI_PREFIX "send-banner?type=pattern")
+DEFINE_ACTION_MULTI      ("suppress-tag",               ACTION_MULTI_SUPPRESS_TAG)
 
 #if DEFINE_ACTION_ALIAS
 

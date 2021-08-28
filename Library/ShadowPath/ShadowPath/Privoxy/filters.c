@@ -1,12 +1,11 @@
-const char filters_rcs[] = "$Id: filters.c,v 1.199 2016/01/16 12:33:35 fabiankeil Exp $";
 /*********************************************************************
  *
  * File        :  $Source: /cvsroot/ijbswa/current/filters.c,v $
  *
  * Purpose     :  Declares functions to parse/crunch headers and pages.
  *
- * Copyright   :  Written by and Copyright (C) 2001-2016 the
- *                Privoxy team. http://www.privoxy.org/
+ * Copyright   :  Written by and Copyright (C) 2001-2020 the
+ *                Privoxy team. https://www.privoxy.org/
  *
  *                Based on the Internet Junkbuster originally written
  *                by and Copyright (C) 1997 Anonymous Coders and
@@ -33,7 +32,7 @@ const char filters_rcs[] = "$Id: filters.c,v 1.199 2016/01/16 12:33:35 fabiankei
  *********************************************************************/
 
 
-#include "sp_config.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <sys/types.h>
@@ -41,21 +40,13 @@ const char filters_rcs[] = "$Id: filters.c,v 1.199 2016/01/16 12:33:35 fabiankei
 #include <ctype.h>
 #include <string.h>
 #include <assert.h>
-#include <inttypes.h>
-#include <sys/errno.h>
 
 #ifndef _WIN32
-#ifndef __OS2__
 #include <unistd.h>
-#endif /* ndef __OS2__ */
 #include <netinet/in.h>
 #else
 #include <winsock2.h>
 #endif /* ndef _WIN32 */
-
-#ifdef __OS2__
-#include <utils.h>
-#endif /* def __OS2__ */
 
 #include "project.h"
 #include "filters.h"
@@ -72,26 +63,164 @@ const char filters_rcs[] = "$Id: filters.c,v 1.199 2016/01/16 12:33:35 fabiankei
 #include "deanimate.h"
 #include "urlmatch.h"
 #include "loaders.h"
-#include "maxminddb.h"
+#ifdef FEATURE_CLIENT_TAGS
+#include "client-tags.h"
+#endif
+#ifdef FEATURE_HTTPS_INSPECTION
+#include "ssl.h"
+#endif
 
 #ifdef _WIN32
 #include "win32.h"
 #endif
 
-#define MIN(a,b) ((a) < (b) ? (a) : (b))
-
-const char filters_h_rcs[] = FILTERS_H_VERSION;
-
 typedef char *(*filter_function_ptr)();
 static filter_function_ptr get_filter_function(const struct client_state *csp);
-static jb_err remove_chunked_transfer_coding(char *buffer, size_t *size);
 static jb_err prepare_for_filtering(struct client_state *csp);
+static void apply_url_actions(struct current_action_spec *action,
+                              struct http_request *http,
+#ifdef FEATURE_CLIENT_TAGS
+                              const struct list *client_tags,
+#endif
+                              struct url_actions *b);
 
-struct forward_spec fwd_default[1];
-
-MMDB_s mmdb;
+#ifdef FEATURE_EXTENDED_STATISTICS
+static void increment_block_reason_counter(const char *block_reason);
+#endif
 
 #ifdef FEATURE_ACL
+#ifdef HAVE_RFC2553
+/*********************************************************************
+ *
+ * Function    :  sockaddr_storage_to_ip
+ *
+ * Description :  Access internal structure of sockaddr_storage
+ *
+ * Parameters  :
+ *          1  :  addr = socket address
+ *          2  :  ip   = IP address as array of octets in network order
+ *                       (it points into addr)
+ *          3  :  len  = length of IP address in octets
+ *          4  :  port = port number in network order;
+ *
+ * Returns     :  void
+ *
+ *********************************************************************/
+static void sockaddr_storage_to_ip(const struct sockaddr_storage *addr,
+                                   uint8_t **ip, unsigned int *len,
+                                   in_port_t **port)
+{
+   assert(NULL != addr);
+   assert(addr->ss_family == AF_INET || addr->ss_family == AF_INET6);
+
+   switch (addr->ss_family)
+   {
+      case AF_INET:
+         if (NULL != len)
+         {
+            *len = 4;
+         }
+         if (NULL != ip)
+         {
+            *ip = (uint8_t *)
+               &(((struct sockaddr_in *)addr)->sin_addr.s_addr);
+         }
+         if (NULL != port)
+         {
+            *port = &((struct sockaddr_in *)addr)->sin_port;
+         }
+         break;
+
+      case AF_INET6:
+         if (NULL != len)
+         {
+            *len = 16;
+         }
+         if (NULL != ip)
+         {
+            *ip = ((struct sockaddr_in6 *)addr)->sin6_addr.s6_addr;
+         }
+         if (NULL != port)
+         {
+            *port = &((struct sockaddr_in6 *)addr)->sin6_port;
+         }
+         break;
+
+   }
+}
+
+
+/*********************************************************************
+ *
+ * Function    :  match_sockaddr
+ *
+ * Description :  Check whether address matches network (IP address and port)
+ *
+ * Parameters  :
+ *          1  :  network = socket address of subnework
+ *          2  :  netmask = network mask as socket address
+ *          3  :  address = checked socket address against given network
+ *
+ * Returns     :  0 = doesn't match; 1 = does match
+ *
+ *********************************************************************/
+static int match_sockaddr(const struct sockaddr_storage *network,
+                          const struct sockaddr_storage *netmask,
+                          const struct sockaddr_storage *address)
+{
+   uint8_t *network_addr, *netmask_addr, *address_addr;
+   unsigned int addr_len;
+   in_port_t *network_port, *netmask_port, *address_port;
+   int i;
+
+   if (network->ss_family != netmask->ss_family)
+   {
+      /* This should never happen */
+      assert(network->ss_family == netmask->ss_family);
+      log_error(LOG_LEVEL_FATAL, "Network and netmask differ in family.");
+   }
+
+   sockaddr_storage_to_ip(network, &network_addr, &addr_len, &network_port);
+   sockaddr_storage_to_ip(netmask, &netmask_addr, NULL, &netmask_port);
+   sockaddr_storage_to_ip(address, &address_addr, NULL, &address_port);
+
+   /* Check for family */
+   if ((network->ss_family == AF_INET) && (address->ss_family == AF_INET6)
+      && IN6_IS_ADDR_V4MAPPED((struct in6_addr *)address_addr))
+   {
+      /* Map AF_INET6 V4MAPPED address into AF_INET */
+      address_addr += 12;
+      addr_len = 4;
+   }
+   else if ((network->ss_family == AF_INET6) && (address->ss_family == AF_INET)
+      && IN6_IS_ADDR_V4MAPPED((struct in6_addr *)network_addr))
+   {
+      /* Map AF_INET6 V4MAPPED network into AF_INET */
+      network_addr += 12;
+      netmask_addr += 12;
+      addr_len = 4;
+   }
+
+   /* XXX: Port check is signaled in netmask */
+   if (*netmask_port && *network_port != *address_port)
+   {
+      return 0;
+   }
+
+   /* TODO: Optimize by checking by words instead of octets */
+   for (i = 0; (i < addr_len) && netmask_addr[i]; i++)
+   {
+      if ((network_addr[i] & netmask_addr[i]) !=
+          (address_addr[i] & netmask_addr[i]))
+      {
+         return 0;
+      }
+   }
+
+   return 1;
+}
+#endif /* def HAVE_RFC2553 */
+
 
 /*********************************************************************
  *
@@ -178,201 +307,6 @@ int block_acl(const struct access_control_addr *dst, const struct client_state *
 }
 
 
-
-#endif /* def FEATURE_ACL */
-
-#ifdef HAVE_RFC2553
-/*********************************************************************
- *
- * Function    :  sockaddr_storage_to_ip
- *
- * Description :  Access internal structure of sockaddr_storage
- *
- * Parameters  :
- *          1  :  addr = socket address
- *          2  :  ip   = IP address as array of octets in network order
- *                       (it points into addr)
- *          3  :  len  = length of IP address in octets
- *          4  :  port = port number in network order;
- *
- * Returns     :  0 = no errror; -1 otherwise.
- *
- *********************************************************************/
-static int sockaddr_storage_to_ip(const struct sockaddr_storage *addr,
-                                  uint8_t **ip, unsigned int *len,
-                                  in_port_t **port)
-{
-    if (NULL == addr)
-    {
-        return(-1);
-    }
-
-    switch (addr->ss_family)
-    {
-        case AF_INET:
-            if (NULL != len)
-            {
-                *len = 4;
-            }
-            if (NULL != ip)
-            {
-                *ip = (uint8_t *)
-                &(((struct sockaddr_in *)addr)->sin_addr.s_addr);
-            }
-            if (NULL != port)
-            {
-                *port = &((struct sockaddr_in *)addr)->sin_port;
-            }
-            break;
-
-        case AF_INET6:
-            if (NULL != len)
-            {
-                *len = 16;
-            }
-            if (NULL != ip)
-            {
-                *ip = ((struct sockaddr_in6 *)addr)->sin6_addr.s6_addr;
-            }
-            if (NULL != port)
-            {
-                *port = &((struct sockaddr_in6 *)addr)->sin6_port;
-            }
-            break;
-
-        default:
-            /* Unsupported address family */
-            return(-1);
-    }
-
-    return(0);
-}
-
-
-/*********************************************************************
- *
- * Function    :  match_sockaddr
- *
- * Description :  Check whether address matches network (IP address and port)
- *
- * Parameters  :
- *          1  :  network = socket address of subnework
- *          2  :  netmask = network mask as socket address
- *          3  :  address = checked socket address against given network
- *
- * Returns     :  0 = doesn't match; 1 = does match
- *
- *********************************************************************/
-static int match_sockaddr(const struct sockaddr_storage *network,
-                          const struct sockaddr_storage *netmask,
-                          const struct sockaddr_storage *address)
-{
-    uint8_t *network_addr, *netmask_addr, *address_addr;
-    unsigned int addr_len;
-    in_port_t *network_port, *netmask_port, *address_port;
-    int i;
-
-    if (network->ss_family != netmask->ss_family)
-    {
-        /* This should never happen */
-        assert(network->ss_family == netmask->ss_family);
-        log_error(LOG_LEVEL_FATAL, "Network and netmask differ in family.");
-    }
-
-    sockaddr_storage_to_ip(network, &network_addr, &addr_len, &network_port);
-    sockaddr_storage_to_ip(netmask, &netmask_addr, NULL, &netmask_port);
-    sockaddr_storage_to_ip(address, &address_addr, NULL, &address_port);
-
-    /* Check for family */
-    if ((network->ss_family == AF_INET) && (address->ss_family == AF_INET6)
-        && IN6_IS_ADDR_V4MAPPED((struct in6_addr *)address_addr))
-    {
-        /* Map AF_INET6 V4MAPPED address into AF_INET */
-        address_addr += 12;
-        addr_len = 4;
-    }
-    else if ((network->ss_family == AF_INET6) && (address->ss_family == AF_INET)
-             && IN6_IS_ADDR_V4MAPPED((struct in6_addr *)network_addr))
-    {
-        /* Map AF_INET6 V4MAPPED network into AF_INET */
-        network_addr += 12;
-        netmask_addr += 12;
-        addr_len = 4;
-    }
-
-    /* XXX: Port check is signaled in netmask */
-    if (*netmask_port && *network_port != *address_port)
-    {
-        return 0;
-    }
-
-    /* TODO: Optimize by checking by words insted of octets */
-    for (i = 0; (i < addr_len) && netmask_addr[i]; i++)
-    {
-        if ((network_addr[i] & netmask_addr[i]) !=
-            (address_addr[i] & netmask_addr[i]))
-        {
-            return 0;
-        }
-    }
-
-    return 1;
-}
-
-
-static int match_ip(const struct sockaddr_storage *network,
-                    const struct sockaddr_storage *netmask,
-                    const struct sockaddr_storage *address)
-{
-    uint8_t *network_addr, *netmask_addr, *address_addr;
-    unsigned int addr_len;
-    in_port_t *network_port, *netmask_port, *address_port;
-    int i;
-
-    if (network->ss_family != netmask->ss_family)
-    {
-        /* This should never happen */
-        assert(network->ss_family == netmask->ss_family);
-        log_error(LOG_LEVEL_FATAL, "Network and netmask differ in family.");
-    }
-
-    sockaddr_storage_to_ip(network, &network_addr, &addr_len, &network_port);
-    sockaddr_storage_to_ip(netmask, &netmask_addr, NULL, &netmask_port);
-    sockaddr_storage_to_ip(address, &address_addr, NULL, &address_port);
-
-    /* Check for family */
-    if ((network->ss_family == AF_INET) && (address->ss_family == AF_INET6)
-        && IN6_IS_ADDR_V4MAPPED((struct in6_addr *)address_addr))
-    {
-        /* Map AF_INET6 V4MAPPED address into AF_INET */
-        address_addr += 12;
-        addr_len = 4;
-    }
-    else if ((network->ss_family == AF_INET6) && (address->ss_family == AF_INET)
-             && IN6_IS_ADDR_V4MAPPED((struct in6_addr *)network_addr))
-    {
-        /* Map AF_INET6 V4MAPPED network into AF_INET */
-        network_addr += 12;
-        netmask_addr += 12;
-        addr_len = 4;
-    }
-
-    /* TODO: Optimize by checking by words insted of octets */
-    for (i = 0; (i < addr_len) && netmask_addr[i]; i++)
-    {
-        if ((network_addr[i] & netmask_addr[i]) !=
-            (address_addr[i] & netmask_addr[i]))
-        {
-            return 0;
-        }
-    }
-    
-    return 1;
-}
-
-#endif /* def HAVE_RFC2553 */
-
-
 /*********************************************************************
  *
  * Function    :  acl_addr
@@ -388,184 +322,183 @@ static int match_ip(const struct sockaddr_storage *network,
  *********************************************************************/
 int acl_addr(const char *aspec, struct access_control_addr *aca)
 {
-    int i, masklength;
+   int i, masklength;
 #ifdef HAVE_RFC2553
-    struct addrinfo hints, *result;
-    uint8_t *mask_data;
-    in_port_t *mask_port;
-    unsigned int addr_len;
+   struct addrinfo hints, *result;
+   uint8_t *mask_data;
+   in_port_t *mask_port;
+   unsigned int addr_len;
 #else
-    long port;
+   long port;
 #endif /* def HAVE_RFC2553 */
-    char *p;
-    char *acl_spec = NULL;
+   char *p;
+   char *acl_spec = NULL;
 
 #ifdef HAVE_RFC2553
-    /* XXX: Depend on ai_family */
-    masklength = 128;
+   /* XXX: Depend on ai_family */
+   masklength = 128;
 #else
-    masklength = 32;
-    port       =  0;
+   masklength = 32;
+   port       =  0;
 #endif
 
-    /*
-     * Use a temporary acl spec copy so we can log
-     * the unmodified original in case of parse errors.
-     */
-    acl_spec = strdup_or_die(aspec);
+   /*
+    * Use a temporary acl spec copy so we can log
+    * the unmodified original in case of parse errors.
+    */
+   acl_spec = strdup_or_die(aspec);
 
-    if ((p = strchr(acl_spec, '/')) != NULL)
-    {
-        *p++ = '\0';
-        if (privoxy_isdigit(*p) == 0)
-        {
-            freez(acl_spec);
-            return(-1);
-        }
-        masklength = atoi(p);
-    }
+   if ((p = strchr(acl_spec, '/')) != NULL)
+   {
+      *p++ = '\0';
+      if (privoxy_isdigit(*p) == 0)
+      {
+         freez(acl_spec);
+         return(-1);
+      }
+      masklength = atoi(p);
+   }
 
-    if ((masklength < 0) ||
+   if ((masklength < 0) ||
 #ifdef HAVE_RFC2553
-        (masklength > 128)
+         (masklength > 128)
 #else
-        (masklength > 32)
+         (masklength > 32)
 #endif
-        )
-    {
-        freez(acl_spec);
-        return(-1);
-    }
+         )
+   {
+      freez(acl_spec);
+      return(-1);
+   }
 
-    if ((*acl_spec == '[') && (NULL != (p = strchr(acl_spec, ']'))))
-    {
-        *p = '\0';
-        memmove(acl_spec, acl_spec + 1, (size_t)(p - acl_spec));
+   if ((*acl_spec == '[') && (NULL != (p = strchr(acl_spec, ']'))))
+   {
+      *p = '\0';
+      memmove(acl_spec, acl_spec + 1, (size_t)(p - acl_spec));
 
-        if (*++p != ':')
-        {
-            p = NULL;
-        }
-    }
-    else
-    {
-        p = strchr(acl_spec, ':');
-    }
-    if (p != NULL)
-    {
-        assert(*p == ':');
-        *p = '\0';
-        p++;
-    }
+      if (*++p != ':')
+      {
+         p = NULL;
+      }
+   }
+   else
+   {
+      p = strchr(acl_spec, ':');
+   }
+   if (p != NULL)
+   {
+      assert(*p == ':');
+      *p = '\0';
+      p++;
+   }
 
 #ifdef HAVE_RFC2553
-    memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
+   memset(&hints, 0, sizeof(struct addrinfo));
+   hints.ai_family = AF_UNSPEC;
+   hints.ai_socktype = SOCK_STREAM;
 
-    i = getaddrinfo(acl_spec, p, &hints, &result);
+   i = getaddrinfo(acl_spec, p, &hints, &result);
 
-    if (i != 0)
-    {
-        log_error(LOG_LEVEL_ERROR, "Can not resolve [%s]:%s: %s",
-                  acl_spec, p, gai_strerror(i));
-        freez(acl_spec);
-        return(-1);
-    }
-    freez(acl_spec);
+   if (i != 0)
+   {
+      log_error(LOG_LEVEL_ERROR, "Can not resolve [%s]:%s: %s",
+         acl_spec, p, gai_strerror(i));
+      freez(acl_spec);
+      return(-1);
+   }
+   freez(acl_spec);
 
-    /* TODO: Allow multihomed hostnames */
-    memcpy(&(aca->addr), result->ai_addr, result->ai_addrlen);
-    freeaddrinfo(result);
+   /* TODO: Allow multihomed hostnames */
+   memcpy(&(aca->addr), result->ai_addr, result->ai_addrlen);
+   freeaddrinfo(result);
 #else
-    if (p != NULL)
-    {
-        char *endptr;
+   if (p != NULL)
+   {
+      char *endptr;
 
-        port = strtol(p, &endptr, 10);
+      port = strtol(p, &endptr, 10);
 
-        if (port <= 0 || port > 65535 || *endptr != '\0')
-        {
-            freez(acl_spec);
-            return(-1);
-        }
-    }
+      if (port <= 0 || port > 65535 || *endptr != '\0')
+      {
+         freez(acl_spec);
+         return(-1);
+      }
+   }
 
-    aca->port = (unsigned long)port;
+   aca->port = (unsigned long)port;
 
-    aca->addr = ntohl(resolve_hostname_to_ip(acl_spec));
-    freez(acl_spec);
+   aca->addr = ntohl(resolve_hostname_to_ip(acl_spec));
+   freez(acl_spec);
 
-    if (aca->addr == INADDR_NONE)
-    {
-        /* XXX: This will be logged as parse error. */
-        return(-1);
-    }
+   if (aca->addr == INADDR_NONE)
+   {
+      /* XXX: This will be logged as parse error. */
+      return(-1);
+   }
 #endif /* def HAVE_RFC2553 */
 
-    /* build the netmask */
+   /* build the netmask */
 #ifdef HAVE_RFC2553
-    /* Clip masklength according to current family. */
-    if ((aca->addr.ss_family == AF_INET) && (masklength > 32))
-    {
-        masklength = 32;
-    }
+   /* Clip masklength according to current family. */
+   if ((aca->addr.ss_family == AF_INET) && (masklength > 32))
+   {
+      masklength = 32;
+   }
 
-    aca->mask.ss_family = aca->addr.ss_family;
-    if (sockaddr_storage_to_ip(&aca->mask, &mask_data, &addr_len, &mask_port))
-    {
-        return(-1);
-    }
+   aca->mask.ss_family = aca->addr.ss_family;
+   sockaddr_storage_to_ip(&aca->mask, &mask_data, &addr_len, &mask_port);
 
-    if (p)
-    {
-        /* ACL contains a port number, check ports in the future. */
-        *mask_port = 1;
-    }
+   if (p)
+   {
+      /* ACL contains a port number, check ports in the future. */
+      *mask_port = 1;
+   }
 
-    /*
-     * XXX: This could be optimized to operate on whole words instead
-     * of octets (128-bit CPU could do it in one iteration).
-     */
-    /*
-     * Octets after prefix can be omitted because of
-     * previous initialization to zeros.
-     */
-    for (i = 0; (i < addr_len) && masklength; i++)
-    {
-        if (masklength >= 8)
-        {
-            mask_data[i] = 0xFF;
-            masklength -= 8;
-        }
-        else
-        {
-            /*
-             * XXX: This assumes MSB of octet is on the left side.
-             * This should be true for all architectures or solved
-             * by the link layer.
-             */
-            mask_data[i] = (uint8_t)~((1 << (8 - masklength)) - 1);
-            masklength = 0;
-        }
-    }
+   /*
+    * XXX: This could be optimized to operate on whole words instead
+    * of octets (128-bit CPU could do it in one iteration).
+    */
+   /*
+    * Octets after prefix can be omitted because of
+    * previous initialization to zeros.
+    */
+   for (i = 0; (i < addr_len) && masklength; i++)
+   {
+      if (masklength >= 8)
+      {
+         mask_data[i] = 0xFF;
+         masklength -= 8;
+      }
+      else
+      {
+         /*
+          * XXX: This assumes MSB of octet is on the left side.
+          * This should be true for all architectures or solved
+          * by the link layer.
+          */
+         mask_data[i] = (uint8_t)~((1 << (8 - masklength)) - 1);
+         masklength = 0;
+      }
+   }
 
 #else
-    aca->mask = 0;
-    for (i=1; i <= masklength ; i++)
-    {
-        aca->mask |= (1U << (32 - i));
-    }
-    
-    /* now mask off the host portion of the ip address
-     * (i.e. save on the network portion of the address).
-     */
-    aca->addr = aca->addr & aca->mask;
+   aca->mask = 0;
+   for (i=1; i <= masklength ; i++)
+   {
+      aca->mask |= (1U << (32 - i));
+   }
+
+   /* now mask off the host portion of the ip address
+    * (i.e. save on the network portion of the address).
+    */
+   aca->addr = aca->addr & aca->mask;
 #endif /* def HAVE_RFC2553 */
-    
-    return(0);
-    
+
+   return(0);
+
 }
+#endif /* def FEATURE_ACL */
+
 
 /*********************************************************************
  *
@@ -573,7 +506,7 @@ int acl_addr(const char *aspec, struct access_control_addr *aca)
  *
  * Description :  Check to see if CONNECT requests to the destination
  *                port of this request are forbidden. The check is
- *                independend of the actual request method.
+ *                independent of the actual request method.
  *
  * Parameters  :
  *          1  :  csp = Current client state (buffers, headers, etc...)
@@ -609,7 +542,7 @@ struct http_response *block_url(struct client_state *csp)
    /*
     * If it's not blocked, don't block it ;-)
     */
-   if ((csp->action->flags & ACTION_BLOCK) == 0 && !(csp->routing == ROUTE_BLOCK))
+   if ((csp->action->flags & ACTION_BLOCK) == 0)
    {
       return NULL;
    }
@@ -624,6 +557,13 @@ struct http_response *block_url(struct client_state *csp)
    {
       return cgi_error_memory();
    }
+
+#ifdef FEATURE_EXTENDED_STATISTICS
+   if (csp->action->string[ACTION_STRING_BLOCK] != NULL)
+   {
+      increment_block_reason_counter(csp->action->string[ACTION_STRING_BLOCK]);
+   }
+#endif
 
    /*
     * If it's an image-url, send back an image or redirect
@@ -691,7 +631,7 @@ struct http_response *block_url(struct client_state *csp)
    }
    else
 #endif /* def FEATURE_IMAGE_BLOCKING */
-   if (csp->action->flags & ACTION_HANDLE_AS_EMPTY_DOCUMENT || (csp->routing == ROUTE_BLOCK))
+   if (csp->action->flags & ACTION_HANDLE_AS_EMPTY_DOCUMENT)
    {
      /*
       *  Send empty document.
@@ -989,6 +929,7 @@ pcrs_job *compile_dynamic_pcrs_job_list(const struct client_state *csp, const st
       {"path",   csp->http->path,  1},
       {"host",   csp->http->host,  1},
       {"origin", csp->ip_addr_str, 1},
+      {"listen-address", csp->listen_addr_str, 1},
       {NULL,     NULL,             1}
    };
 
@@ -1106,7 +1047,7 @@ char *rewrite_url(char *old_url, const char *pcrs_command)
  *                the last URL found.
  *
  *********************************************************************/
-char *get_last_url(char *subject, const char *redirect_mode)
+static char *get_last_url(char *subject, const char *redirect_mode)
 {
    char *new_url = NULL;
    char *tmp;
@@ -1122,7 +1063,7 @@ char *get_last_url(char *subject, const char *redirect_mode)
    }
 
    if (0 == strcmpic(redirect_mode, "check-decoded-url") && strchr(subject, '%'))
-   {  
+   {
       char *url_segment = NULL;
       char **url_segments;
       size_t max_segments;
@@ -1256,7 +1197,6 @@ struct http_response *redirect_url(struct client_state *csp)
     */
    char * redirect_mode;
 #endif /* def FEATURE_FAST_REDIRECTS */
-   char *old_url = NULL;
    char *new_url = NULL;
    char *redirection_string;
 
@@ -1282,8 +1222,36 @@ struct http_response *redirect_url(struct client_state *csp)
 
       if (*redirection_string == 's')
       {
-         old_url = csp->http->url;
-         new_url = rewrite_url(old_url, redirection_string);
+         char *requested_url;
+
+#ifdef FEATURE_HTTPS_INSPECTION
+         if (client_use_ssl(csp))
+         {
+            jb_err err;
+
+            requested_url = strdup_or_die("https://");
+            err = string_append(&requested_url, csp->http->hostport);
+            if (!err) err = string_append(&requested_url, csp->http->path);
+            if (err)
+            {
+               log_error(LOG_LEVEL_FATAL,
+                  "Failed to rebuild URL 'https://%s%s'",
+                  csp->http->hostport, csp->http->path);
+            }
+         }
+         else
+#endif
+         {
+            requested_url = csp->http->url;
+         }
+         new_url = rewrite_url(requested_url, redirection_string);
+#ifdef FEATURE_HTTPS_INSPECTION
+         if (requested_url != csp->http->url)
+         {
+            assert(client_use_ssl(csp));
+            freez(requested_url);
+         }
+#endif
       }
       else
       {
@@ -1297,6 +1265,8 @@ struct http_response *redirect_url(struct client_state *csp)
 #ifdef FEATURE_FAST_REDIRECTS
    if ((csp->action->flags & ACTION_FAST_REDIRECTS))
    {
+      char *old_url;
+
       redirect_mode = csp->action->string[ACTION_STRING_FAST_REDIRECTS];
 
       /*
@@ -1381,42 +1351,18 @@ struct http_response *redirect_url(struct client_state *csp)
  *
  * Function    :  is_imageurl
  *
- * Description :  Given a URL, decide whether it is an image or not,
- *                using either the info from a previous +image action
- *                or, #ifdef FEATURE_IMAGE_DETECT_MSIE, and the browser
- *                is MSIE and not on a Mac, tell from the browser's accept
- *                header.
+ * Description :  Given a URL, decide whether it should be treated
+ *                as image URL or not.
  *
  * Parameters  :
  *          1  :  csp = Current client state (buffers, headers, etc...)
  *
- * Returns     :  True (nonzero) if URL is an image, false (0)
+ * Returns     :  True (nonzero) if URL is an image URL, false (0)
  *                otherwise
  *
  *********************************************************************/
 int is_imageurl(const struct client_state *csp)
 {
-#ifdef FEATURE_IMAGE_DETECT_MSIE
-   char *tmp;
-
-   tmp = get_header_value(csp->headers, "User-Agent:");
-   if (tmp && strstr(tmp, "MSIE") && !strstr(tmp, "Mac_"))
-   {
-      tmp = get_header_value(csp->headers, "Accept:");
-      if (tmp && strstr(tmp, "image/gif"))
-      {
-         /* Client will accept HTML.  If this seems counterintuitive,
-          * blame Microsoft.
-          */
-         return(0);
-      }
-      else
-      {
-         return(1);
-      }
-   }
-#endif /* def FEATURE_IMAGE_DETECT_MSIE */
-
    return ((csp->action->flags & ACTION_IMAGE) != 0);
 
 }
@@ -1623,25 +1569,34 @@ struct re_filterfile_spec *get_filter(const struct client_state *csp,
 
 /*********************************************************************
  *
- * Function    :  pcrs_filter_response
+ * Function    :  pcrs_filter_impl
  *
  * Description :  Execute all text substitutions from all applying
- *                +filter actions on the text buffer that's been
- *                accumulated in csp->iob->buf.
+ *                (based on filter_response_body value) +filter
+ *                or +client_body_filter actions on the given buffer.
  *
  * Parameters  :
  *          1  :  csp = Current client state (buffers, headers, etc...)
+ *          2  :  filter_response_body = when TRUE execute +filter
+ *                actions; execute +client_body_filter actions otherwise
+ *          3  :  data = Target data
+ *          4  :  data_len = Target data len
  *
  * Returns     :  a pointer to the (newly allocated) modified buffer.
  *                or NULL if there were no hits or something went wrong
  *
  *********************************************************************/
-static char *pcrs_filter_response(struct client_state *csp)
+static char *pcrs_filter_impl(const struct client_state *csp, int filter_response_body,
+                              const char *data, size_t *data_len)
 {
    int hits = 0;
    size_t size, prev_size;
+   const int filters_idx =
+      filter_response_body ? ACTION_MULTI_FILTER : ACTION_MULTI_CLIENT_BODY_FILTER;
+   const enum filter_type filter_type =
+      filter_response_body ? FT_CONTENT_FILTER : FT_CLIENT_BODY_FILTER;
 
-   char *old = NULL;
+   const char *old = NULL;
    char *new = NULL;
    pcrs_job *job;
 
@@ -1651,7 +1606,7 @@ static char *pcrs_filter_response(struct client_state *csp)
    /*
     * Sanity first
     */
-   if (csp->iob->cur >= csp->iob->eod)
+   if (*data_len == 0)
    {
       return(NULL);
    }
@@ -1663,15 +1618,15 @@ static char *pcrs_filter_response(struct client_state *csp)
       return(NULL);
    }
 
-   size = (size_t)(csp->iob->eod - csp->iob->cur);
-   old = csp->iob->cur;
+   size = *data_len;
+   old = data;
 
    /*
-    * For all applying +filter actions, look if a filter by that
+    * For all applying actions, look if a filter by that
     * name exists and if yes, execute it's pcrs_joblist on the
     * buffer.
     */
-   for (filtername = csp->action->multi[ACTION_MULTI_FILTER]->first;
+   for (filtername = csp->action->multi[filters_idx]->first;
         filtername != NULL; filtername = filtername->next)
    {
       int current_hits = 0; /* Number of hits caused by this filter */
@@ -1679,7 +1634,7 @@ static char *pcrs_filter_response(struct client_state *csp)
       int job_hits     = 0; /* How many hits the current job caused */
       pcrs_job *joblist;
 
-      b = get_filter(csp, filtername->str, FT_CONTENT_FILTER);
+      b = get_filter(csp, filtername->str, filter_type);
       if (b == NULL)
       {
          continue;
@@ -1710,7 +1665,7 @@ static char *pcrs_filter_response(struct client_state *csp)
              * input for the next one.
              */
             current_hits += job_hits;
-            if (old != csp->iob->cur)
+            if (old != data)
             {
                freez(old);
             }
@@ -1742,29 +1697,82 @@ static char *pcrs_filter_response(struct client_state *csp)
 
       if (b->dynamic) pcrs_free_joblist(joblist);
 
-      log_error(LOG_LEVEL_RE_FILTER,
-         "filtering %s%s (size %d) with \'%s\' produced %d hits (new size %d).",
-         csp->http->hostport, csp->http->path, prev_size, b->name, current_hits, size);
-
+      if (filter_response_body)
+      {
+         log_error(LOG_LEVEL_RE_FILTER,
+            "filtering %s%s (size %lu) with \'%s\' produced %d hits (new size %lu).",
+            csp->http->hostport, csp->http->path, prev_size, b->name, current_hits, size);
+      }
+      else
+      {
+         log_error(LOG_LEVEL_RE_FILTER, "filtering request body from client %s "
+            "(size %lu) with \'%s\' produced %d hits (new size %lu).",
+            csp->ip_addr_str, prev_size, b->name, current_hits, size);
+      }
+#ifdef FEATURE_EXTENDED_STATISTICS
+      update_filter_statistics(b->name, current_hits);
+#endif
       hits += current_hits;
    }
 
    /*
     * If there were no hits, destroy our copy and let
-    * chat() use the original in csp->iob
+    * chat() use the original content
     */
    if (!hits)
    {
+      if (old != data && old != new)
+      {
+         freez(old);
+      }
       freez(new);
       return(NULL);
    }
 
-   csp->flags |= CSP_FLAG_MODIFIED;
-   csp->content_length = size;
-   clear_iob(csp->iob);
-
+   *data_len = size;
    return(new);
+}
 
+
+/*********************************************************************
+ *
+ * Function    :  pcrs_filter_response_body
+ *
+ * Description :  Execute all text substitutions from all applying
+ *                +filter actions on the text buffer that's been
+ *                accumulated in csp->iob->buf.
+ *
+ * Parameters  :
+ *          1  :  csp = Current client state (buffers, headers, etc...)
+ *
+ * Returns     :  a pointer to the (newly allocated) modified buffer.
+ *                or NULL if there were no hits or something went wrong
+ *
+ *********************************************************************/
+static char *pcrs_filter_response_body(struct client_state *csp)
+{
+   size_t size = (size_t)(csp->iob->eod - csp->iob->cur);
+
+   char *new = NULL;
+
+   /*
+    * Sanity first
+    */
+   if (csp->iob->cur >= csp->iob->eod)
+   {
+      return NULL;
+   }
+
+   new = pcrs_filter_impl(csp, TRUE, csp->iob->cur, &size);
+
+   if (new != NULL)
+   {
+      csp->flags |= CSP_FLAG_MODIFIED;
+      csp->content_length = size;
+      clear_iob(csp->iob);
+   }
+
+   return new;
 }
 
 
@@ -1825,6 +1833,7 @@ static void set_privoxy_variables(const struct client_state *csp)
       { "PRIVOXY_PATH",   csp->http->path  },
       { "PRIVOXY_HOST",   csp->http->host  },
       { "PRIVOXY_ORIGIN", csp->ip_addr_str },
+      { "PRIVOXY_LISTEN_ADDRESS", csp->listen_addr_str },
    };
 
    for (i = 0; i < SZ(env); i++)
@@ -1906,7 +1915,7 @@ static char *execute_external_filter(const struct client_state *csp,
     */
    if ((*size != 0) && fwrite(content, *size, 1, fp) != 1)
    {
-      log_error(LOG_LEVEL_ERROR, "fwrite(..., %d, 1, ..) failed: %E", *size);
+      log_error(LOG_LEVEL_ERROR, "fwrite(..., %lu, 1, ..) failed: %E", *size);
       unlink(file_name);
       fclose(fp);
       return NULL;
@@ -1982,7 +1991,7 @@ static char *execute_external_filter(const struct client_state *csp,
    {
       log_error(LOG_LEVEL_RE_FILTER,
          "Executing '%s' resulted in return value %d. "
-         "Read %d of up to %d bytes.", name, (ret >> 8), new_size, *size);
+         "Read %lu of up to %lu bytes.", name, (ret >> 8), new_size, *size);
    }
 
    unlink(file_name);
@@ -1992,6 +2001,28 @@ static char *execute_external_filter(const struct client_state *csp,
 
 }
 #endif /* def FEATURE_EXTERNAL_FILTERS */
+
+
+/*********************************************************************
+ *
+ * Function    :  pcrs_filter_request_body
+ *
+ * Description :  Execute all text substitutions from all applying
+ *                +client_body_filter actions on the given text buffer.
+ *
+ * Parameters  :
+ *          1  :  csp = Current client state (buffers, headers, etc...)
+ *          2  :  data = Target data
+ *          3  :  data_len = Target data len
+ *
+ * Returns     :  a pointer to the (newly allocated) modified buffer.
+ *                or NULL if there were no hits or something went wrong
+ *
+ *********************************************************************/
+static char *pcrs_filter_request_body(const struct client_state *csp, const char *data, size_t *data_len)
+{
+   return pcrs_filter_impl(csp, FALSE, data, data_len);
+}
 
 
 /*********************************************************************
@@ -2009,7 +2040,11 @@ static char *execute_external_filter(const struct client_state *csp,
  *                or NULL in case something went wrong.
  *
  *********************************************************************/
+#ifdef FUZZ
+char *gif_deanimate_response(struct client_state *csp)
+#else
 static char *gif_deanimate_response(struct client_state *csp)
+#endif
 {
    struct binbuffer *in, *out;
    char *p;
@@ -2017,12 +2052,8 @@ static char *gif_deanimate_response(struct client_state *csp)
 
    size = (size_t)(csp->iob->eod - csp->iob->cur);
 
-   if (  (NULL == (in =  (struct binbuffer *)zalloc(sizeof *in )))
-      || (NULL == (out = (struct binbuffer *)zalloc(sizeof *out))) )
-   {
-      log_error(LOG_LEVEL_DEANIMATE, "failed! (no mem)");
-      return NULL;
-   }
+   in =  zalloc_or_die(sizeof(*in));
+   out = zalloc_or_die(sizeof(*out));
 
    in->buffer = csp->iob->cur;
    in->size = size;
@@ -2031,7 +2062,7 @@ static char *gif_deanimate_response(struct client_state *csp)
    {
       log_error(LOG_LEVEL_DEANIMATE, "failed! (gif parsing)");
       freez(in);
-      binbuf_free(out);
+      buf_free(out);
       return(NULL);
    }
    else
@@ -2042,7 +2073,8 @@ static char *gif_deanimate_response(struct client_state *csp)
       }
       else
       {
-         log_error(LOG_LEVEL_DEANIMATE, "Success! GIF shrunk from %d bytes to %d.", size, out->offset);
+         log_error(LOG_LEVEL_DEANIMATE,
+            "Success! GIF shrunk from %lu bytes to %lu.", size, out->offset);
       }
       csp->content_length = out->offset;
       csp->flags |= CSP_FLAG_MODIFIED;
@@ -2081,7 +2113,7 @@ static filter_function_ptr get_filter_function(const struct client_state *csp)
    if ((csp->content_type & CT_TEXT) &&
        (!list_is_empty(csp->action->multi[ACTION_MULTI_FILTER])))
    {
-      filter_function = pcrs_filter_response;
+      filter_function = pcrs_filter_response_body;
    }
    else if ((csp->content_type & CT_GIF) &&
             (csp->action->flags & ACTION_DEANIMATE))
@@ -2111,12 +2143,22 @@ static filter_function_ptr get_filter_function(const struct client_state *csp)
  *                JB_ERR_PARSE otherwise
  *
  *********************************************************************/
+#ifdef FUZZ
+extern jb_err remove_chunked_transfer_coding(char *buffer, size_t *size)
+#else
 static jb_err remove_chunked_transfer_coding(char *buffer, size_t *size)
+#endif
 {
    size_t newsize = 0;
    unsigned int chunksize = 0;
    char *from_p, *to_p;
    const char *end_of_buffer = buffer + *size;
+
+   if (*size == 0)
+   {
+      log_error(LOG_LEVEL_FATAL, "Invalid chunked input. Buffer is empty.");
+      return JB_ERR_PARSE;
+   }
 
    assert(buffer);
    from_p = to_p = buffer;
@@ -2138,8 +2180,8 @@ static jb_err remove_chunked_transfer_coding(char *buffer, size_t *size)
       {
          log_error(LOG_LEVEL_ERROR,
             "Chunk size %u exceeds buffered data left. "
-            "Already digested %u of %u buffered bytes.",
-            chunksize, (unsigned int)newsize, (unsigned int)*size);
+            "Already digested %lu of %lu buffered bytes.",
+            chunksize, newsize, *size);
          return JB_ERR_PARSE;
       }
 
@@ -2193,7 +2235,8 @@ static jb_err remove_chunked_transfer_coding(char *buffer, size_t *size)
    }
 
    /* XXX: Should get its own loglevel. */
-   log_error(LOG_LEVEL_RE_FILTER, "De-chunking successful. Shrunk from %d to %d", *size, newsize);
+   log_error(LOG_LEVEL_RE_FILTER,
+      "De-chunking successful. Shrunk from %lu to %lu", *size, newsize);
 
    *size = newsize;
 
@@ -2246,7 +2289,11 @@ static jb_err prepare_for_filtering(struct client_state *csp)
     * If the body has a supported transfer-encoding,
     * decompress it, adjusting size and iob->eod.
     */
-   if (csp->content_type & (CT_GZIP|CT_DEFLATE))
+   if ((csp->content_type & (CT_GZIP|CT_DEFLATE))
+#ifdef FEATURE_BROTLI
+      || (csp->content_type & CT_BROTLI)
+#endif
+       )
    {
       if (0 == csp->iob->eod - csp->iob->cur)
       {
@@ -2264,11 +2311,14 @@ static jb_err prepare_for_filtering(struct client_state *csp)
       else
       {
          /*
-          * Unset CT_GZIP and CT_DEFLATE to remember not
-          * to modify the Content-Encoding header later.
+          * Unset content types to remember not to
+          * modify the Content-Encoding header later.
           */
          csp->content_type &= ~CT_GZIP;
          csp->content_type &= ~CT_DEFLATE;
+#ifdef FEATURE_BROTLI
+         csp->content_type &= ~CT_BROTLI;
+#endif
       }
    }
 #endif
@@ -2363,6 +2413,46 @@ char *execute_content_filters(struct client_state *csp)
 
 /*********************************************************************
  *
+ * Function    :  execute_client_body_filters
+ *
+ * Description :  Executes client body filters for the request that is buffered
+ *                in the client_iob. Upon success moves client_iob cur pointer
+ *                to the end of the processed data.
+ *
+ * Parameters  :
+ *          1  :  csp = Current client state (buffers, headers, etc...)
+ *          2  :  content_length = content length. Upon successful filtering
+ *                the passed value is updated with the new content length.
+ *
+ * Returns     :  Pointer to the modified buffer, or
+ *                NULL if filtering failed or wasn't necessary.
+ *
+ *********************************************************************/
+char *execute_client_body_filters(struct client_state *csp, size_t *content_length)
+{
+   char *ret;
+
+   assert(client_body_filters_enabled(csp->action));
+
+   if (content_length == 0)
+   {
+      /*
+       * No content, no filtering necessary.
+       */
+      return NULL;
+   }
+
+   ret = pcrs_filter_request_body(csp, csp->client_iob->cur, content_length);
+   if (ret != NULL)
+   {
+      csp->client_iob->cur = csp->client_iob->eod;
+   }
+   return ret;
+}
+
+
+/*********************************************************************
+ *
  * Function    :  get_url_actions
  *
  * Description :  Gets the actions for this URL.
@@ -2389,12 +2479,15 @@ void get_url_actions(struct client_state *csp, struct http_request *http)
          return;
       }
 
-       apply_url_actions(csp->action, csp, b);
+#ifdef FEATURE_CLIENT_TAGS
+      apply_url_actions(csp->action, http, csp->client_tags, b);
+#else
+      apply_url_actions(csp->action, http, b);
+#endif
    }
 
    return;
 }
-
 
 /*********************************************************************
  *
@@ -2405,30 +2498,38 @@ void get_url_actions(struct client_state *csp, struct http_request *http)
  * Parameters  :
  *          1  :  action = Destination.
  *          2  :  http = Current URL
- *          3  :  b = list of URL actions to apply
+ *          3  :  client_tags = list of client tags
+ *          4  :  b = list of URL actions to apply
  *
  * Returns     :  N/A
  *
  *********************************************************************/
-int apply_url_actions(struct current_action_spec *action,
-                       struct client_state *csp,
-                       struct url_actions *b)
+static void apply_url_actions(struct current_action_spec *action,
+                              struct http_request *http,
+#ifdef FEATURE_CLIENT_TAGS
+                              const struct list *client_tags,
+#endif
+                              struct url_actions *b)
 {
    if (b == NULL)
    {
       /* Should never happen */
-      return 0;
+      return;
    }
 
-    for (b = b->next; NULL != b; b = b->next)
-    {
-        if (url_match(b->url, csp->http))
-        {
-            merge_current_action(action, b->action);
-        }
-    }
-    return 0;
-
+   for (b = b->next; NULL != b; b = b->next)
+   {
+      if (url_match(b->url, http))
+      {
+         merge_current_action(action, b->action);
+      }
+#ifdef FEATURE_CLIENT_TAGS
+      if (client_tag_match(b->url, client_tags))
+      {
+         merge_current_action(action, b->action);
+      }
+#endif
+   }
 }
 
 
@@ -2458,67 +2559,58 @@ int apply_url_actions(struct current_action_spec *action,
  *                Invalid syntax is fatal.
  *
  *********************************************************************/
-static struct forward_spec *get_forward_override_settings(struct client_state *csp)
+static const struct forward_spec *get_forward_override_settings(struct client_state *csp)
 {
-    const char *forward_override_line = csp->action->string[ACTION_STRING_FORWARD_OVERRIDE];
-    char forward_settings[BUFFER_SIZE];
-    char *http_parent = NULL;
-    /* variable names were chosen for consistency reasons. */
-    struct forward_spec *fwd = NULL;
-    int vec_count;
-    char *vec[3];
+   const char *forward_override_line = csp->action->string[ACTION_STRING_FORWARD_OVERRIDE];
+   char forward_settings[BUFFER_SIZE];
+   char *http_parent = NULL;
+   /* variable names were chosen for consistency reasons. */
+   struct forward_spec *fwd = NULL;
+   int vec_count;
+   char *vec[3];
 
-    assert(csp->action->flags & ACTION_FORWARD_OVERRIDE);
-    /* Should be enforced by load_one_actions_file() */
-    assert(strlen(forward_override_line) < sizeof(forward_settings) - 1);
+   assert(csp->action->flags & ACTION_FORWARD_OVERRIDE);
+   /* Should be enforced by load_one_actions_file() */
+   assert(strlen(forward_override_line) < sizeof(forward_settings) - 1);
 
-    /* Create a copy ssplit can modify */
-    strlcpy(forward_settings, forward_override_line, sizeof(forward_settings));
+   /* Create a copy ssplit can modify */
+   strlcpy(forward_settings, forward_override_line, sizeof(forward_settings));
 
-    if (NULL != csp->fwd && csp->fwd->should_unload)
-    {
+   if (NULL != csp->fwd)
+   {
       /*
        * XXX: Currently necessary to prevent memory
        * leaks when the show-url-info cgi page is visited.
        */
       unload_forward_spec(csp->fwd);
-    }
+   }
 
-    /*
+   /*
     * allocate a new forward node, valid only for
     * the lifetime of this request. Save its location
     * in csp as well, so sweep() can free it later on.
     */
-    fwd = csp->fwd = zalloc(sizeof(*fwd));
-    if (NULL == fwd)
-    {
-      log_error(LOG_LEVEL_FATAL,
-         "can't allocate memory for forward-override{%s}", forward_override_line);
-      /* Never get here - LOG_LEVEL_FATAL causes program exit */
-      return NULL;
-    }
+   fwd = csp->fwd = zalloc_or_die(sizeof(*fwd));
 
-    fwd->should_unload = 1;
-
-    vec_count = ssplit(forward_settings, " \t", vec, SZ(vec));
-    if ((vec_count == 2) && !strcasecmp(vec[0], "forward"))
-    {
+   vec_count = ssplit(forward_settings, " \t", vec, SZ(vec));
+   if ((vec_count == 2) && !strcasecmp(vec[0], "forward"))
+   {
       fwd->type = SOCKS_NONE;
 
       /* Parse the parent HTTP proxy host:port */
       http_parent = vec[1];
 
-    }
-    else if ((vec_count == 2) && !strcasecmp(vec[0], "forward-webserver"))
-    {
+   }
+   else if ((vec_count == 2) && !strcasecmp(vec[0], "forward-webserver"))
+   {
       fwd->type = FORWARD_WEBSERVER;
 
       /* Parse the parent HTTP server host:port */
       http_parent = vec[1];
 
-    }
-    else if (vec_count == 3)
-    {
+   }
+   else if (vec_count == 3)
+   {
       char *socks_proxy = NULL;
 
       if  (!strcasecmp(vec[0], "forward-socks4"))
@@ -2544,92 +2636,40 @@ static struct forward_spec *get_forward_override_settings(struct client_state *c
 
       if (NULL != socks_proxy)
       {
-          /* Parse the SOCKS proxy [user:pass@]host[:port] */
-          fwd->gateway_port = 1080;
-          parse_forwarder_address(socks_proxy,
-                      &fwd->gateway_host, &fwd->gateway_port,
-                      &fwd->auth_username, &fwd->auth_password);
+         /* Parse the SOCKS proxy [user:pass@]host[:port] */
+         fwd->gateway_port = 1080;
+         parse_forwarder_address(socks_proxy,
+            &fwd->gateway_host, &fwd->gateway_port,
+            &fwd->auth_username, &fwd->auth_password);
 
          http_parent = vec[2];
       }
-    }
+   }
 
-    if (NULL == http_parent)
-    {
+   if (NULL == http_parent)
+   {
       log_error(LOG_LEVEL_FATAL,
          "Invalid forward-override syntax in: %s", forward_override_line);
       /* Never get here - LOG_LEVEL_FATAL causes program exit */
-    }
+   }
 
-    /* Parse http forwarding settings */
-    if (strcmp(http_parent, ".") != 0)
-    {
+   /* Parse http forwarding settings */
+   if (strcmp(http_parent, ".") != 0)
+   {
       fwd->forward_port = 8000;
       parse_forwarder_address(http_parent,
-         &fwd->forward_host, &fwd->forward_port, NULL, NULL);
-    }
+         &fwd->forward_host, &fwd->forward_port,
+         NULL, NULL);
+   }
 
-    assert (NULL != fwd);
+   assert (NULL != fwd);
 
-    log_error(LOG_LEVEL_CONNECT,
+   log_error(LOG_LEVEL_CONNECT,
       "Overriding forwarding settings based on \'%s\'", forward_override_line);
 
-    return fwd;
+   return fwd;
 }
 
-//static struct forward_spec *get_forward_rule_settings(struct client_state *csp, struct url_actions *url_action, int which)
-//{
-//    const char *forward_override_line = url_action->action->string[which];
-//    char forward_settings[BUFFER_SIZE];
-//    char *http_parent = NULL;
-//    /* variable names were chosen for consistency reasons. */
-//    struct forward_spec *fwd = NULL;
-//    int vec_count;
-//    char *vec[3];
-//
-//    /* Should be enforced by load_one_actions_file() */
-//    assert(strlen(forward_override_line) < sizeof(forward_settings) - 1);
-//
-//    /* Create a copy ssplit can modify */
-//    strlcpy(forward_settings, forward_override_line, sizeof(forward_settings));
-//
-//    if (NULL != csp->fwd && csp->fwd->should_unload)
-//    {
-//        /*
-//         * XXX: Currently necessary to prevent memory
-//         * leaks when the show-url-info cgi page is visited.
-//         */
-//        unload_forward_spec(csp->fwd);
-//    }
-//
-//    vec_count = ssplit(forward_settings, "@@", vec, SZ(vec));
-//    if (vec_count != 2)
-//    {
-//        log_error(LOG_LEVEL_FATAL,
-//                  "Invalid forward-url syntax in: %s", forward_override_line);
-//        return NULL;
-//    }else {
-//        url_action->rule = forward_override_line;
-//        if (!strcasecmp(vec[0], "PROXY")) {
-//            return proxy_list;
-//        }else if (!strcasecmp(vec[0], "BLOCK")) {
-////            url_action->block = 1;
-//            csp->action->flags |= (ACTION_BLOCK | ACTION_HANDLE_AS_EMPTY_DOCUMENT);
-//            return NULL;
-//        }
-//    }
-//    return NULL;
-//}
-
-struct forward_spec *get_forward_rule_settings_by_action(struct url_actions *url_action)
-{
-    if (url_action->routing == ROUTE_PROXY) {
-        return proxy_list;
-    }else if (url_action->routing == ROUTE_DIRECT) {
-        return fwd_default;
-    }
-    return NULL;
-}
 
 /*********************************************************************
  *
@@ -2644,136 +2684,32 @@ struct forward_spec *get_forward_rule_settings_by_action(struct url_actions *url
  * Returns     :  Pointer to forwarding information.
  *
  *********************************************************************/
-struct forward_spec *forward_url(struct client_state *csp,
+const struct forward_spec *forward_url(struct client_state *csp,
                                        const struct http_request *http)
 {
-    fwd_default->is_default = 1;
-    csp->routing = ROUTE_NONE;
-    csp->current_forward_stage = FORWARD_STAGE_NONE;
-    struct forward_spec *fwd = NULL;
+   static const struct forward_spec fwd_default[1]; /* Zero'ed due to being static. */
+   struct forward_spec *fwd = csp->config->forward;
 
-    // Match forward in mume.action
-    log_time_stage(csp, TIME_STAGE_URL_RULE_MATCH_START);
-    struct url_actions *action = po_url_rules;
-    while (action != NULL) {
-        if (url_match(action->url, http))
-        {
-            break;
-        }
-        action = action->next;
-    }
-    log_time_stage(csp, TIME_STAGE_URL_RULE_MATCH_END);
+   if (csp->action->flags & ACTION_FORWARD_OVERRIDE)
+   {
+      return get_forward_override_settings(csp);
+   }
 
-    if (action) {
-        csp->routing = action->routing;
-        char *rule = strdup_or_die(action->rule);
-        fwd = get_forward_rule_settings_by_action(action);
-        if (action->routing == ROUTE_PROXY && fwd == NULL) {
-            csp->routing = ROUTE_NONE;
-            if (string_append(&rule, " (Ignore. No Proxy Provided.)") != JB_ERR_OK) {
-                log_error(LOG_LEVEL_ERROR,
-                          "Failed to append string when ignoring rule: memory issue");
-            }
-        }
-        csp->rule = rule;
-        csp->current_forward_stage = FORWARD_STAGE_URL;
-    }
+   if (fwd == NULL)
+   {
+      return fwd_default;
+   }
 
-    if (fwd != NULL) {
-        return fwd;
-    }
+   while (fwd != NULL)
+   {
+      if (url_match(fwd->url, http))
+      {
+         return fwd;
+      }
+      fwd = fwd->next;
+   }
 
-    return fwd_default;
-}
-
-struct url_actions *forward_ip_routing(struct sockaddr_in *addr)
-{
-    struct url_actions *action = po_ip_rules;
-
-    while (action != NULL) {
-        if (action->tree && radix32tree_find(action->tree, ntohl(addr->sin_addr.s_addr)) != RADIX_NO_VALUE) {
-            return action;
-        }else if (action->geoip != NULL) {
-            int mmdb_error;
-            MMDB_lookup_result_s result = MMDB_lookup_sockaddr(&mmdb, (struct sockaddr*)addr, &mmdb_error);
-            if (MMDB_SUCCESS == mmdb_error) {
-                MMDB_entry_data_s entry_data;
-                int status = MMDB_get_value(&result.entry, &entry_data, "country", "iso_code", NULL);
-                if (MMDB_SUCCESS == status) {
-                    if (entry_data.has_data) {
-                        if (strncmp(entry_data.utf8_string, action->geoip, MIN(entry_data.data_size, strlen(action->geoip))) == 0) {
-                            return action;
-                        }
-                    }
-                }
-            }
-        }
-        action = action->next;
-    }
-
-    return NULL;
-}
-
-
-struct forward_spec *forward_ip(struct client_state *csp, struct sockaddr_storage addr)
-{
-    struct url_actions *action = forward_ip_routing((struct sockaddr_in *)&addr);
-
-    if (action == NULL) {
-        return NULL;
-    }
-
-    struct forward_spec *fwd = NULL;
-
-    csp->routing = action->routing;
-    csp->current_forward_stage = FORWARD_STAGE_IP;
-    fwd = get_forward_rule_settings_by_action(action);
-    char *rule = strdup_or_die(action->rule);
-    if (action->routing == ROUTE_PROXY && fwd == NULL) {
-        csp->routing = ROUTE_NONE;
-        if (string_append(&rule, " (Ignore. No Proxy Provided.)") != JB_ERR_OK) {
-            log_error(LOG_LEVEL_ERROR,
-                      "Failed to append string when ignoringg IP: memory issue");
-        }
-    }
-    csp->rule = rule;
-
-    return fwd;
-}
-
-struct forward_spec *forward_dns_pollution_ip(struct client_state *csp, struct sockaddr_storage addr) {
-    struct forward_spec *fwd = NULL;
-
-    struct sockaddr_in *sin = (struct sockaddr_in *)&addr;
-
-    struct url_actions *action = po_dns_ip_rules;
-    while (action != NULL) {
-        if (action->tree && radix32tree_find(action->tree, ntohl(sin->sin_addr.s_addr)) != RADIX_NO_VALUE) {
-            csp->routing = action->routing;
-            csp->current_forward_stage = FORWARD_STAGE_DNS_POLLUTION;
-            fwd = get_forward_rule_settings_by_action(action);
-            char *rule = strdup_or_die("DNS Polluted");
-            if (action->routing == ROUTE_PROXY) {
-                if (fwd == NULL) {
-                    csp->routing = ROUTE_NONE;
-                    if (string_append(&rule, " (Ignore. No Proxy Provided.)") != JB_ERR_OK) {
-                        log_error(LOG_LEVEL_ERROR,
-                                  "Failed to append string when ignoring dns: memory issue");
-                    }
-                }else {
-                    if (string_append(&rule, ". PROXY.") != JB_ERR_OK) {
-                        log_error(LOG_LEVEL_ERROR,
-                                  "Failed to append string when ignoring dns: memory issue");
-                    }
-                }
-            }
-            csp->rule = rule;
-            break;
-        }
-        action = action->next;
-    }
-
-    return fwd;
+   return fwd_default;
 }
 
 
@@ -2889,7 +2825,7 @@ int content_requires_filtering(struct client_state *csp)
        * The server didn't bother to declare a MIME-Type.
        * Assume it's text that can be filtered.
        *
-       * This also regulary happens with 304 responses,
+       * This also regularly happens with 304 responses,
        * therefore logging anything here would cause
        * too much noise.
        */
@@ -2940,6 +2876,25 @@ int content_filters_enabled(const struct current_action_spec *action)
 
 /*********************************************************************
  *
+ * Function    :  client_body_filters_enabled
+ *
+ * Description :  Checks whether there are any client body filters
+ *                enabled for the current request.
+ *
+ * Parameters  :
+ *          1  :  action = Action spec to check.
+ *
+ * Returns     :  TRUE for yes, FALSE otherwise
+ *
+ *********************************************************************/
+int client_body_filters_enabled(const struct current_action_spec *action)
+{
+   return !list_is_empty(action->multi[ACTION_MULTI_CLIENT_BODY_FILTER]);
+}
+
+
+/*********************************************************************
+ *
  * Function    :  filters_available
  *
  * Description :  Checks whether there are any filters available.
@@ -2964,6 +2919,283 @@ int filters_available(const struct client_state *csp)
    return FALSE;
 }
 
+#ifdef FEATURE_EXTENDED_STATISTICS
+
+struct filter_statistics_entry
+{
+   char *filter;
+   unsigned long long executions;
+   unsigned long long response_bodies_modified;
+   unsigned long long hits;
+
+   struct filter_statistics_entry *next;
+};
+
+static struct filter_statistics_entry *filter_statistics = NULL;
+
+
+/*********************************************************************
+ *
+ * Function    :  register_filter_for_statistics
+ *
+ * Description :  Registers a filter so we can gather statistics for
+ *                it unless the filter has already been registered
+ *                before.
+ *
+ * Parameters  :
+ *          1  :  filter = Name of the filter to register
+ *
+ * Returns     :  void
+ *
+ *********************************************************************/
+void register_filter_for_statistics(const char *filter)
+{
+   struct filter_statistics_entry *entry;
+
+   privoxy_mutex_lock(&filter_statistics_mutex);
+
+   if (filter_statistics == NULL)
+   {
+      filter_statistics = zalloc_or_die(sizeof(struct filter_statistics_entry));
+      entry = filter_statistics;
+      entry->filter = strdup_or_die(filter);
+      privoxy_mutex_unlock(&filter_statistics_mutex);
+      return;
+   }
+   entry = filter_statistics;
+   while (entry != NULL)
+   {
+      if (!strcmp(entry->filter, filter))
+      {
+         /* Already registered, nothing to do. */
+         break;
+      }
+      if (entry->next == NULL)
+      {
+         entry->next = zalloc_or_die(sizeof(struct filter_statistics_entry));
+         entry->next->filter = strdup_or_die(filter);
+         break;
+      }
+      entry = entry->next;
+   }
+
+   privoxy_mutex_unlock(&filter_statistics_mutex);
+
+}
+
+
+/*********************************************************************
+ *
+ * Function    :  update_filter_statistics
+ *
+ * Description :  Updates the statistics for a filter.
+ *
+ * Parameters  :
+ *          1  :  filter = Name of the filter to update
+ *          2  :  hits = Hit count.
+ *
+ * Returns     :  void
+ *
+ *********************************************************************/
+void update_filter_statistics(const char *filter, int hits)
+{
+   struct filter_statistics_entry *entry;
+
+   privoxy_mutex_lock(&filter_statistics_mutex);
+
+   entry = filter_statistics;
+   while (entry != NULL)
+   {
+      if (!strcmp(entry->filter, filter))
+      {
+         entry->executions++;
+         if (hits != 0)
+         {
+            entry->response_bodies_modified++;
+            entry->hits += (unsigned)hits;
+         }
+         break;
+      }
+      entry = entry->next;
+   }
+
+   privoxy_mutex_unlock(&filter_statistics_mutex);
+
+}
+
+
+/*********************************************************************
+ *
+ * Function    :  get_filter_statistics
+ *
+ * Description :  Gets the statistics for a filter.
+ *
+ * Parameters  :
+ *          1  :  filter = Name of the filter to get statistics for.
+ *          2  :  executions = Storage for the execution count.
+ *          3  :  response_bodies_modified = Storage for the number
+ *                of modified response bodies.
+ *          4  :  hits = Storage for the number of hits.
+ *
+ * Returns     :  void
+ *
+ *********************************************************************/
+void get_filter_statistics(const char *filter, unsigned long long *executions,
+                           unsigned long long *response_bodies_modified,
+                           unsigned long long *hits)
+{
+   struct filter_statistics_entry *entry;
+
+   privoxy_mutex_lock(&filter_statistics_mutex);
+
+   entry = filter_statistics;
+   while (entry != NULL)
+   {
+      if (!strcmp(entry->filter, filter))
+      {
+         *executions = entry->executions;
+         *response_bodies_modified = entry->response_bodies_modified;
+         *hits = entry->hits;
+         break;
+      }
+      entry = entry->next;
+   }
+
+   privoxy_mutex_unlock(&filter_statistics_mutex);
+
+}
+
+
+struct block_statistics_entry
+{
+   char *block_reason;
+   unsigned long long count;
+
+   struct block_statistics_entry *next;
+};
+
+static struct block_statistics_entry *block_statistics = NULL;
+
+/*********************************************************************
+ *
+ * Function    :  register_block_reason_for_statistics
+ *
+ * Description :  Registers a block reason so we can gather statistics
+ *                for it unless the block reason has already been
+ *                registered before.
+ *
+ * Parameters  :
+ *          1  :  block_reason = Block reason to register
+ *
+ * Returns     :  void
+ *
+ *********************************************************************/
+void register_block_reason_for_statistics(const char *block_reason)
+{
+   struct block_statistics_entry *entry;
+
+   privoxy_mutex_lock(&block_statistics_mutex);
+
+   if (block_statistics == NULL)
+   {
+      block_statistics = zalloc_or_die(sizeof(struct block_statistics_entry));
+      entry = block_statistics;
+      entry->block_reason = strdup_or_die(block_reason);
+      privoxy_mutex_unlock(&block_statistics_mutex);
+      return;
+   }
+   entry = block_statistics;
+   while (entry != NULL)
+   {
+      if (!strcmp(entry->block_reason, block_reason))
+      {
+         /* Already registered, nothing to do. */
+         break;
+      }
+      if (entry->next == NULL)
+      {
+         entry->next = zalloc_or_die(sizeof(struct block_statistics_entry));
+         entry->next->block_reason = strdup_or_die(block_reason);
+         break;
+      }
+      entry = entry->next;
+   }
+
+   privoxy_mutex_unlock(&block_statistics_mutex);
+
+}
+
+
+/*********************************************************************
+ *
+ * Function    :  increment_block_reason_counter
+ *
+ * Description :  Updates the counter for a block reason.
+ *
+ * Parameters  :
+ *          1  :  block_reason = Block reason to count
+ *
+ * Returns     :  void
+ *
+ *********************************************************************/
+static void increment_block_reason_counter(const char *block_reason)
+{
+   struct block_statistics_entry *entry;
+
+   privoxy_mutex_lock(&block_statistics_mutex);
+
+   entry = block_statistics;
+   while (entry != NULL)
+   {
+      if (!strcmp(entry->block_reason, block_reason))
+      {
+         entry->count++;
+         break;
+      }
+      entry = entry->next;
+   }
+
+   privoxy_mutex_unlock(&block_statistics_mutex);
+
+}
+
+
+/*********************************************************************
+ *
+ * Function    :  get_block_reason_count
+ *
+ * Description :  Gets number of times a block reason was used.
+ *
+ * Parameters  :
+ *          1  :  block_reason = Block reason to get statistics for.
+ *          2  :  count = Storage for the number of times the block
+ *                        reason was used.
+ *
+ * Returns     :  void
+ *
+ *********************************************************************/
+void get_block_reason_count(const char *block_reason, unsigned long long *count)
+{
+   struct block_statistics_entry *entry;
+
+   privoxy_mutex_lock(&block_statistics_mutex);
+
+   entry = block_statistics;
+   while (entry != NULL)
+   {
+      if (!strcmp(entry->block_reason, block_reason))
+      {
+         *count = entry->count;
+         break;
+      }
+      entry = entry->next;
+   }
+
+   privoxy_mutex_unlock(&block_statistics_mutex);
+
+}
+
+#endif /* def FEATURE_EXTENDED_STATISTICS */
 
 /*
   Local Variables:

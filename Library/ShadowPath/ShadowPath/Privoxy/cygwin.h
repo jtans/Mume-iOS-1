@@ -1,10 +1,12 @@
-#ifndef SSPLIT_H_INCLUDED
-#define SSPLIT_H_INCLUDED
+#ifndef CYGWIN_H_INCLUDED
+#define CYGWIN_H_INCLUDED
 /*********************************************************************
  *
- * File        :  $Source: /cvsroot/ijbswa/current/ssplit.h,v $
+ * File        :  $Source: /cvsroot/ijbswa/current/cygwin.h,v $
  *
- * Purpose     :  A function to split a string at specified deliminters.
+ * Purpose     :  The windows.h file seems to be a *tad* different, so I
+ *                will bridge the gaps here.  Perhaps I should convert the
+ *                latest SDK too?  Shudder, I think not.
  *
  * Copyright   :  Written by and Copyright (C) 2001 members of the
  *                Privoxy team. https://www.privoxy.org/
@@ -33,10 +35,22 @@
  *
  *********************************************************************/
 
+/* Conditionally include this whole file. */
+#ifdef __MINGW32__
 
-extern int ssplit(char *str, const char *delim, char *vec[], size_t vec_len);
+/* Hmmm, seems to be overlooked. */
+#define _RICHEDIT_VER 0x0300
 
-#endif /* ndef SSPLIT_H_INCLUDED */
+/*
+ * Named slightly different ... but not in Cygwin v1.3.1 ...
+ *
+ * #define LVITEM   LV_ITEM
+ * #define LVCOLUMN LV_COLUMN
+ */
+
+#endif /* def __MINGW32__ */
+#endif /* ndef CYGWIN_H_INCLUDED */
+
 
 /*
   Local Variables:

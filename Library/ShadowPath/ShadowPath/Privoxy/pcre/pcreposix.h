@@ -58,7 +58,6 @@ enum {
 
 
 /* The structure representing a compiled regular expression. */
-#undef regex_t
 
 typedef struct {
   void *re_pcre;

@@ -1,4 +1,3 @@
-const char gateway_rcs[] = "$Id: gateway.c,v 1.96 2016/01/16 12:30:43 fabiankeil Exp $";
 /*********************************************************************
  *
  * File        :  $Source: /cvsroot/ijbswa/current/gateway.c,v $
@@ -7,8 +6,8 @@ const char gateway_rcs[] = "$Id: gateway.c,v 1.96 2016/01/16 12:30:43 fabiankeil
  *                using a "forwarder" (i.e. HTTP proxy and/or a SOCKS4
  *                or SOCKS5 proxy).
  *
- * Copyright   :  Written by and Copyright (C) 2001-2009 the
- *                Privoxy team. http://www.privoxy.org/
+ * Copyright   :  Written by and Copyright (C) 2001-2020 the
+ *                Privoxy team. https://www.privoxy.org/
  *
  *                Based on the Internet Junkbuster originally written
  *                by and Copyright (C) 1997 Anonymous Coders and
@@ -35,7 +34,7 @@ const char gateway_rcs[] = "$Id: gateway.c,v 1.96 2016/01/16 12:30:43 fabiankeil
  *********************************************************************/
 
 
-#include "sp_config.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <sys/types.h>
@@ -56,10 +55,6 @@ const char gateway_rcs[] = "$Id: gateway.c,v 1.96 2016/01/16 12:30:43 fabiankeil
 #include <netdb.h>
 #endif /* def __BEOS__ */
 
-#ifdef __OS2__
-#include <utils.h>
-#endif /* def __OS2__ */
-
 #include "project.h"
 #include "jcc.h"
 #include "errlog.h"
@@ -79,7 +74,15 @@ const char gateway_rcs[] = "$Id: gateway.c,v 1.96 2016/01/16 12:30:43 fabiankeil
 #endif /* HAVE_POLL */
 #endif /* def FEATURE_CONNECTION_KEEP_ALIVE */
 
-const char gateway_h_rcs[] = GATEWAY_H_VERSION;
+static jb_socket socks4_connect(const struct forward_spec *fwd,
+                                const char *target_host,
+                                int target_port,
+                                struct client_state *csp);
+
+static jb_socket socks5_connect(const struct forward_spec *fwd,
+                                const char *target_host,
+                                int target_port,
+                                struct client_state *csp);
 
 enum {
    SOCKS4_REQUEST_GRANTED        =  90,
@@ -122,9 +125,11 @@ struct socks_reply {
 static const char socks_userid[] = "anonymous";
 
 #ifdef FEATURE_CONNECTION_SHARING
+#ifndef FEATURE_CONNECTION_KEEP_ALIVE
+#error Using FEATURE_CONNECTION_SHARING without FEATURE_CONNECTION_KEEP_ALIVE is impossible
+#endif
 
 #define MAX_REUSABLE_CONNECTIONS 100
-static unsigned int keep_alive_timeout = DEFAULT_KEEP_ALIVE_TIMEOUT;
 
 static struct reusable_connection reusable_connection[MAX_REUSABLE_CONNECTIONS];
 static int mark_connection_unused(const struct reusable_connection *connection);
@@ -144,6 +149,13 @@ static int mark_connection_unused(const struct reusable_connection *connection);
 extern void initialize_reusable_connections(void)
 {
    unsigned int slot = 0;
+
+#if !defined(HAVE_POLL) && !defined(_WIN32)
+   log_error(LOG_LEVEL_INFO,
+      "Detecting already dead connections might not work "
+      "correctly on your platform. In case of problems, "
+      "unset the keep-alive-timeout option.");
+#endif
 
    for (slot = 0; slot < SZ(reusable_connection); slot++)
    {
@@ -205,6 +217,7 @@ void remember_connection(const struct reusable_connection *connection)
       return;
    }
 
+   assert(slot < SZ(reusable_connection));
    assert(NULL != connection->host);
    reusable_connection[slot].host = strdup_or_die(connection->host);
    reusable_connection[slot].sfd = connection->sfd;
@@ -234,7 +247,6 @@ void remember_connection(const struct reusable_connection *connection)
       reusable_connection[slot].gateway_host = NULL;
    }
    reusable_connection[slot].gateway_port = connection->gateway_port;
-    
    if (NULL != connection->auth_username)
    {
       reusable_connection[slot].auth_username = strdup_or_die(connection->auth_username);
@@ -398,6 +410,8 @@ static int connection_detail_matches(const char *connection_detail,
    return(!strcmpic(connection_detail, forwarder_detail));
 
 }
+
+
 /*********************************************************************
  *
  * Function    :  connection_destination_matches
@@ -426,43 +440,39 @@ int connection_destination_matches(const struct reusable_connection *connection,
       return FALSE;
    }
 
-   if ((    (NULL != connection->gateway_host)
-         && (NULL != fwd->gateway_host)
-         && strcmpic(connection->gateway_host, fwd->gateway_host))
-       && (connection->gateway_host != fwd->gateway_host))
+   if (!connection_detail_matches(connection->gateway_host, fwd->gateway_host))
    {
       log_error(LOG_LEVEL_CONNECT,
          "Gateway mismatch. Previous gateway: %s. Current gateway: %s",
-         connection->gateway_host, fwd->gateway_host);
+         string_or_none(connection->gateway_host),
+         string_or_none(fwd->gateway_host));
       return FALSE;
    }
-    
-    if (!connection_detail_matches(connection->auth_username, fwd->auth_username))
-    {
-        log_error(LOG_LEVEL_CONNECT, "Socks user name mismatch. "
-                  "Previous user name: %s. Current user name: %s",
-                  string_or_none(connection->auth_username),
-                  string_or_none(fwd->auth_username));
-        return FALSE;
-    }
-    
-    if (!connection_detail_matches(connection->auth_password, fwd->auth_password))
-    {
-        log_error(LOG_LEVEL_CONNECT, "Socks user name mismatch. "
-                  "Previous password: %s. Current password: %s",
-                  string_or_none(connection->auth_password),
-                  string_or_none(fwd->auth_password));
-        return FALSE;
-    }
 
-   if ((    (NULL != connection->forward_host)
-         && (NULL != fwd->forward_host)
-         && strcmpic(connection->forward_host, fwd->forward_host))
-      && (connection->forward_host != fwd->forward_host))
+   if (!connection_detail_matches(connection->auth_username, fwd->auth_username))
+   {
+      log_error(LOG_LEVEL_CONNECT, "Socks user name mismatch. "
+         "Previous user name: %s. Current user name: %s",
+         string_or_none(connection->auth_username),
+         string_or_none(fwd->auth_username));
+      return FALSE;
+   }
+
+   if (!connection_detail_matches(connection->auth_password, fwd->auth_password))
+   {
+      log_error(LOG_LEVEL_CONNECT, "Socks user name mismatch. "
+         "Previous password: %s. Current password: %s",
+         string_or_none(connection->auth_password),
+         string_or_none(fwd->auth_password));
+      return FALSE;
+   }
+
+   if (!connection_detail_matches(connection->forward_host, fwd->forward_host))
    {
       log_error(LOG_LEVEL_CONNECT,
          "Forwarding proxy mismatch. Previous proxy: %s. Current proxy: %s",
-         connection->forward_host, fwd->forward_host);
+         string_or_none(connection->forward_host),
+         string_or_none(fwd->forward_host));
       return FALSE;
    }
 
@@ -505,7 +515,7 @@ int close_unusable_connections(void)
          {
             log_error(LOG_LEVEL_CONNECT,
                "The connection to %s:%d in slot %d timed out. "
-               "Closing socket %d. Timeout is: %d. Assumed latency: %d.",
+               "Closing socket %d. Timeout is: %d. Assumed latency: %ld.",
                reusable_connection[slot].host,
                reusable_connection[slot].port, slot,
                reusable_connection[slot].sfd,
@@ -573,7 +583,7 @@ static jb_socket get_reusable_connection(const struct http_request *http,
             reusable_connection[slot].in_use = TRUE;
             sfd = reusable_connection[slot].sfd;
             log_error(LOG_LEVEL_CONNECT,
-               "Found reusable socket %d for %s:%d in slot %d. Timestamp made %d "
+               "Found reusable socket %d for %s:%d in slot %d. Timestamp made %ld "
                "seconds ago. Timeout: %d. Latency: %d. Requests served: %d",
                sfd, reusable_connection[slot].host, reusable_connection[slot].port,
                slot, time(NULL) - reusable_connection[slot].timestamp,
@@ -636,25 +646,6 @@ static int mark_connection_unused(const struct reusable_connection *connection)
    return socket_found;
 
 }
-
-
-/*********************************************************************
- *
- * Function    :  set_keep_alive_timeout
- *
- * Description :  Sets the timeout after which open
- *                connections will no longer be reused.
- *
- * Parameters  :
- *          1  :  timeout = The timeout in seconds.
- *
- * Returns     :  void
- *
- *********************************************************************/
-void set_keep_alive_timeout(unsigned int timeout)
-{
-   keep_alive_timeout = timeout;
-}
 #endif /* def FEATURE_CONNECTION_SHARING */
 
 
@@ -712,15 +703,15 @@ jb_socket forwarded_connect(const struct forward_spec *fwd,
    {
       case SOCKS_NONE:
       case FORWARD_WEBSERVER:
-         sfd = connect_to(dest_host, dest_port, csp, 0);
+         sfd = connect_to(dest_host, dest_port, csp);
          break;
       case SOCKS_4:
       case SOCKS_4A:
-         sfd = socks4_connect(fwd->gateway_host, fwd->gateway_port, fwd->type, dest_host, dest_port, csp);
+         sfd = socks4_connect(fwd, dest_host, dest_port, csp);
          break;
       case SOCKS_5:
       case SOCKS_5T:
-         sfd = socks5_connect(fwd->gateway_host, fwd->gateway_port, fwd->auth_username, fwd->auth_password, fwd->type, dest_host, dest_port, csp);
+         sfd = socks5_connect(fwd, dest_host, dest_port, csp);
          break;
       default:
          /* Should never get here */
@@ -739,6 +730,51 @@ jb_socket forwarded_connect(const struct forward_spec *fwd,
 
 }
 
+
+#ifdef FUZZ
+/*********************************************************************
+ *
+ * Function    :  socks_fuzz
+ *
+ * Description :  Wrapper around socks[45]_connect() used for fuzzing.
+ *
+ * Parameters  :
+ *          1  :  csp = Current client state (buffers, headers, etc...)
+ *
+ * Returns     :  JB_ERR_OK or JB_ERR_PARSE
+ *
+ *********************************************************************/
+extern jb_err socks_fuzz(struct client_state *csp)
+{
+   jb_socket socket;
+   static struct forward_spec fwd;
+   char target_host[] = "fuzz.example.org";
+   int target_port = 12345;
+
+   fwd.gateway_host = strdup_or_die("fuzz.example.org");
+   fwd.gateway_port = 12345;
+
+   fwd.type = SOCKS_4A;
+   socket = socks4_connect(&fwd, target_host, target_port, csp);
+
+   if (JB_INVALID_SOCKET != socket)
+   {
+      fwd.type = SOCKS_5;
+      socket = socks5_connect(&fwd, target_host, target_port, csp);
+   }
+
+   if (JB_INVALID_SOCKET == socket)
+   {
+      log_error(LOG_LEVEL_ERROR, "%s", csp->error_message);
+      return JB_ERR_PARSE;
+   }
+
+   log_error(LOG_LEVEL_INFO, "Input looks like an acceptable socks response");
+
+   return JB_ERR_OK;
+
+}
+#endif
 
 /*********************************************************************
  *
@@ -763,10 +799,8 @@ jb_socket forwarded_connect(const struct forward_spec *fwd,
  * Returns     :  JB_INVALID_SOCKET => failure, else a socket file descriptor.
  *
  *********************************************************************/
-jb_socket socks4_connect(char *gateway_host,
-                         int gateway_port,
-                         enum forwarder_type type,
-                                const char * target_host,
+static jb_socket socks4_connect(const struct forward_spec *fwd,
+                                const char *target_host,
                                 int target_port,
                                 struct client_state *csp)
 {
@@ -780,14 +814,14 @@ jb_socket socks4_connect(char *gateway_host,
    int err = 0;
    char *errstr = NULL;
 
-   if ((gateway_host == NULL) || (*gateway_host == '\0'))
+   if ((fwd->gateway_host == NULL) || (*fwd->gateway_host == '\0'))
    {
       /* XXX: Shouldn't the config file parser prevent this? */
       errstr = "NULL gateway host specified.";
       err = 1;
    }
 
-   if (gateway_port <= 0)
+   if (fwd->gateway_port <= 0)
    {
       errstr = "invalid gateway port specified.";
       err = 1;
@@ -807,7 +841,7 @@ jb_socket socks4_connect(char *gateway_host,
 
    csiz = sizeof(*c) + sizeof(socks_userid) - sizeof(c->userid) - sizeof(c->padding);
 
-   switch (type)
+   switch (fwd->type)
    {
       case SOCKS_4:
          web_server_addr = resolve_hostname_to_ip(target_host);
@@ -872,8 +906,11 @@ jb_socket socks4_connect(char *gateway_host,
    c->dstip[2]    = (unsigned char)((web_server_addr   >>  8) & 0xff);
    c->dstip[3]    = (unsigned char)((web_server_addr        ) & 0xff);
 
+#ifdef FUZZ
+   sfd = 0;
+#else
    /* pass the request to the socks server */
-   sfd = connect_to(gateway_host, gateway_port, csp, 1);
+   sfd = connect_to(fwd->gateway_host, fwd->gateway_port, csp);
 
    if (sfd == JB_INVALID_SOCKET)
    {
@@ -901,7 +938,9 @@ jb_socket socks4_connect(char *gateway_host,
       err = 1;
       close_socket(sfd);
    }
-   else if (read_socket(sfd, buf, sizeof(buf)) != sizeof(*s))
+   else
+#endif
+       if (read_socket(sfd, buf, sizeof(buf)) != sizeof(*s))
    {
       errstr = "SOCKS4 negotiation read failed.";
       log_error(LOG_LEVEL_CONNECT, "socks4_connect: %s", errstr);
@@ -989,6 +1028,7 @@ static const char *translate_socks5_error(int socks_error)
    }
 }
 
+
 /*********************************************************************
  *
  * Function    :  socks5_connect
@@ -1008,11 +1048,7 @@ static const char *translate_socks5_error(int socks_error)
  * Returns     :  JB_INVALID_SOCKET => failure, else a socket file descriptor.
  *
  *********************************************************************/
-jb_socket socks5_connect(char *gateway_host,
-                        int gateway_port,
-                         char *auth_username,
-                         char *auth_password,
-                         enum forwarder_type type,
+static jb_socket socks5_connect(const struct forward_spec *fwd,
                                 const char *target_host,
                                 int target_port,
                                 struct client_state *csp)
@@ -1029,14 +1065,14 @@ jb_socket socks5_connect(char *gateway_host,
    jb_socket sfd;
    const char *errstr = NULL;
 
-   assert(gateway_host);
-   if ((gateway_host == NULL) || (*gateway_host == '\0'))
+   assert(fwd->gateway_host);
+   if ((fwd->gateway_host == NULL) || (*fwd->gateway_host == '\0'))
    {
       errstr = "NULL gateway host specified";
       err = 1;
    }
 
-   if (gateway_port <= 0)
+   if (fwd->gateway_port <= 0)
    {
       /*
        * XXX: currently this can't happen because in
@@ -1054,7 +1090,7 @@ jb_socket socks5_connect(char *gateway_host,
       err = 1;
    }
 
-   if ((type != SOCKS_5) && (type != SOCKS_5T))
+   if ((fwd->type != SOCKS_5) && (fwd->type != SOCKS_5T))
    {
       /* Should never get here */
       log_error(LOG_LEVEL_FATAL,
@@ -1071,8 +1107,12 @@ jb_socket socks5_connect(char *gateway_host,
       return(JB_INVALID_SOCKET);
    }
 
+#ifdef FUZZ
+   sfd = 0;
+   if (!err && read_socket(sfd, sbuf, 2) != 2)
+#else
    /* pass the request to the socks server */
-   sfd = connect_to(gateway_host, gateway_port, csp, 1);
+   sfd = connect_to(fwd->gateway_host, fwd->gateway_port, csp);
 
    if (sfd == JB_INVALID_SOCKET)
    {
@@ -1086,17 +1126,17 @@ jb_socket socks5_connect(char *gateway_host,
 
    client_pos = 0;
    cbuf[client_pos++] = '\x05'; /* Version */
-   
-    if (auth_username && auth_password)
-    {
-        cbuf[client_pos++] = '\x02'; /* Two authentication methods supported */
-        cbuf[client_pos++] = '\x02'; /* Username/password */
-    }
-    else
-    {
-        cbuf[client_pos++] = '\x01'; /* One authentication method supported */
-    }
-    cbuf[client_pos++] = '\x00'; /* The no authentication authentication method */
+
+   if (fwd->auth_username && fwd->auth_password)
+   {
+      cbuf[client_pos++] = '\x02'; /* Two authentication methods supported */
+      cbuf[client_pos++] = '\x02'; /* Username/password */
+   }
+   else
+   {
+      cbuf[client_pos++] = '\x01'; /* One authentication method supported */
+   }
+   cbuf[client_pos++] = '\x00'; /* The no authentication authentication method */
 
    if (write_socket(sfd, cbuf, client_pos))
    {
@@ -1106,7 +1146,6 @@ jb_socket socks5_connect(char *gateway_host,
       close_socket(sfd);
       return(JB_INVALID_SOCKET);
    }
-
    if (!data_is_available(sfd, csp->config->socket_timeout))
    {
       if (socket_is_still_alive(sfd))
@@ -1121,6 +1160,7 @@ jb_socket socks5_connect(char *gateway_host,
    }
 
    if (!err && read_socket(sfd, sbuf, sizeof(sbuf)) != 2)
+#endif
    {
       errstr = "SOCKS5 negotiation read failed";
       err = 1;
@@ -1138,63 +1178,64 @@ jb_socket socks5_connect(char *gateway_host,
       err = 1;
    }
 
-    if (!err && (sbuf[1] == '\x02'))
-    {
-        if (auth_username && auth_password)
-        {
-            /* check cbuf overflow */
-            size_t auth_len = strlen(auth_username) + strlen(auth_password) + 3;
-            if (auth_len > sizeof(cbuf))
-            {
-                errstr = "SOCKS5 username and/or password too long";
-                err = 1;
-            }
-        }
-        else
-        {
-            errstr = "SOCKS5 server requested authentication while "
+   if (!err && (sbuf[1] == '\x02'))
+   {
+      if (fwd->auth_username && fwd->auth_password)
+      {
+         /* check cbuf overflow */
+         size_t auth_len = strlen(fwd->auth_username) + strlen(fwd->auth_password) + 3;
+         if (auth_len > sizeof(cbuf))
+         {
+            errstr = "SOCKS5 username and/or password too long";
+            err = 1;
+         }
+      }
+      else
+      {
+         errstr = "SOCKS5 server requested authentication while "
             "no credentials are configured";
+         err = 1;
+      }
+
+      if (!err)
+      {
+         client_pos = 0;
+         cbuf[client_pos++] = '\x01'; /* Version */
+         cbuf[client_pos++] = (char)strlen(fwd->auth_username);
+
+         memcpy(cbuf + client_pos, fwd->auth_username, strlen(fwd->auth_username));
+         client_pos += strlen(fwd->auth_username);
+         cbuf[client_pos++] = (char)strlen(fwd->auth_password);
+         memcpy(cbuf + client_pos, fwd->auth_password, strlen(fwd->auth_password));
+         client_pos += strlen(fwd->auth_password);
+
+         if (write_socket(sfd, cbuf, client_pos))
+         {
+            errstr = "SOCKS5 negotiation auth write failed";
+            csp->error_message = strdup(errstr);
+            log_error(LOG_LEVEL_CONNECT, "%s", errstr);
+            close_socket(sfd);
+            return(JB_INVALID_SOCKET);
+         }
+
+         if (read_socket(sfd, sbuf, sizeof(sbuf)) != 2)
+         {
+            errstr = "SOCKS5 negotiation auth read failed";
             err = 1;
-        }
-        
-        if (!err)
-        {
-            client_pos = 0;
-            cbuf[client_pos++] = '\x01'; /* Version */
-            cbuf[client_pos++] = (char)strlen(auth_username);
-            
-            memcpy(cbuf + client_pos, auth_username, strlen(auth_username));
-            client_pos += strlen(auth_username);
-            cbuf[client_pos++] = (char)strlen(auth_password);
-            memcpy(cbuf + client_pos, auth_password, strlen(auth_password));
-            client_pos += strlen(auth_password);
-            
-            if (write_socket(sfd, cbuf, client_pos))
-            {
-                errstr = "SOCKS5 negotiation auth write failed";
-                csp->error_message = strdup(errstr);
-                log_error(LOG_LEVEL_CONNECT, "%s", errstr);
-                close_socket(sfd);
-                return(JB_INVALID_SOCKET);
-            }
-            
-            if (read_socket(sfd, sbuf, sizeof(sbuf)) != 2)
-            {
-                errstr = "SOCKS5 negotiation auth read failed";
-                err = 1;
-            }
-        }
-        
-        if (!err && (sbuf[1] != '\x00'))
-        {
-            errstr = "SOCKS5 authentication failed";
-            err = 1;
-        }
-    } else if (!err && (sbuf[1] != '\x00'))
-    {
-        errstr = "SOCKS5 negotiation protocol error";
-        err = 1;
-    }
+         }
+      }
+
+      if (!err && (sbuf[1] != '\x00'))
+      {
+         errstr = "SOCKS5 authentication failed";
+         err = 1;
+      }
+   }
+   else if (!err && (sbuf[1] != '\x00'))
+   {
+      errstr = "SOCKS5 negotiation protocol error";
+      err = 1;
+   }
 
    if (err)
    {
@@ -1214,11 +1255,12 @@ jb_socket socks5_connect(char *gateway_host,
    cbuf[client_pos++] = (char)(hostlen & 0xffu);
    assert(sizeof(cbuf) - client_pos > (size_t)255);
    /* Using strncpy because we really want the nul byte padding. */
-   strncpy(cbuf + client_pos, target_host, sizeof(cbuf) - client_pos);
+   strncpy(cbuf + client_pos, target_host, sizeof(cbuf) - client_pos - 1);
    client_pos += (hostlen & 0xffu);
    cbuf[client_pos++] = (char)((target_port >> 8) & 0xff);
    cbuf[client_pos++] = (char)((target_port     ) & 0xff);
 
+#ifndef FUZZ
    if (write_socket(sfd, cbuf, client_pos))
    {
       errstr = "SOCKS5 negotiation write failed";
@@ -1236,7 +1278,7 @@ jb_socket socks5_connect(char *gateway_host,
     * doesn't send data until it gets our 200 response) and the
     * client request has actually been completely read already.
     */
-   if ((type == SOCKS_5T) && (csp->http->ssl == 0)
+   if ((fwd->type == SOCKS_5T) && (csp->http->ssl == 0)
       && (csp->flags & CSP_FLAG_CLIENT_REQUEST_COMPLETELY_READ))
    {
       char *client_headers = list_to_text(csp->headers);
@@ -1250,7 +1292,7 @@ jb_socket socks5_connect(char *gateway_host,
       header_length= strlen(client_headers);
 
       log_error(LOG_LEVEL_CONNECT,
-         "Optimistically sending %d bytes of client headers intended for %s",
+         "Optimistically sending %lu bytes of client headers intended for %s",
          header_length, csp->http->hostport);
 
       if (write_socket(sfd, client_headers, header_length))
@@ -1266,19 +1308,20 @@ jb_socket socks5_connect(char *gateway_host,
          unsigned long long buffered_request_bytes =
             (unsigned long long)(csp->client_iob->eod - csp->client_iob->cur);
          log_error(LOG_LEVEL_CONNECT,
-            "Optimistically sending %d bytes of client body. Expected %d",
+            "Optimistically sending %llu bytes of client body. Expected %llu",
             csp->expected_client_content_length, buffered_request_bytes);
          assert(csp->expected_client_content_length == buffered_request_bytes);
          if (write_socket(sfd, csp->client_iob->cur, buffered_request_bytes))
          {
             log_error(LOG_LEVEL_CONNECT,
-               "optimistically writing %d bytes of client body to: %s failed: %E",
+               "optimistically writing %llu bytes of client body to: %s failed: %E",
                buffered_request_bytes, csp->http->hostport);
             return(JB_INVALID_SOCKET);
          }
          clear_iob(csp->client_iob);
       }
    }
+#endif
 
    server_size = read_socket(sfd, sbuf, SIZE_SOCKS5_REPLY_IPV4);
    if (server_size != SIZE_SOCKS5_REPLY_IPV4)
@@ -1301,28 +1344,28 @@ jb_socket socks5_connect(char *gateway_host,
       }
       else
       {
-          if (sbuf[3] == '\x04')
-          {
-              /*
-               * The address field contains an IPv6 address
-               * which means we didn't get the whole reply
-               * yet. Read and discard the rest of it to make
-               * sure it isn't treated as HTTP data later on.
-               */
-              server_size = read_socket(sfd, sbuf, SOCKS5_REPLY_DIFFERENCE);
-              if (server_size != SOCKS5_REPLY_DIFFERENCE)
-              {
-                  errstr = "SOCKS5 negotiation read failed (IPv6 address)";
-              }
-          }
-          else if (sbuf[3] != '\x01')
-          {
-              errstr = "SOCKS5 reply contains unsupported address type";
-          }
-          if (errstr == NULL)
-          {
-              return(sfd);
-          }
+         if (sbuf[3] == '\x04')
+         {
+            /*
+             * The address field contains an IPv6 address
+             * which means we didn't get the whole reply
+             * yet. Read and discard the rest of it to make
+             * sure it isn't treated as HTTP data later on.
+             */
+            server_size = read_socket(sfd, sbuf, SOCKS5_REPLY_DIFFERENCE);
+            if (server_size != SOCKS5_REPLY_DIFFERENCE)
+            {
+               errstr = "SOCKS5 negotiation read failed (IPv6 address)";
+            }
+         }
+         else if (sbuf[3] != '\x01')
+         {
+             errstr = "SOCKS5 reply contains unsupported address type";
+         }
+         if (errstr == NULL)
+         {
+            return(sfd);
+         }
       }
    }
 

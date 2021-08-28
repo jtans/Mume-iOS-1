@@ -13,7 +13,7 @@
  *                getting ludicrously long with feature defines.
  *
  * Copyright   :  Written by and Copyright (C) 2001-2014 the
- *                Privoxy team. http://www.privoxy.org/
+ *                Privoxy team. https://www.privoxy.org/
  *
  *                Based on the Internet Junkbuster originally written
  *                by and Copyright (C) 1997 Anonymous Coders and
@@ -53,12 +53,12 @@
 /*
  * Version number - Point (_._.X)
  */
-#define VERSION_POINT 24
+#define VERSION_POINT 32
 
 /*
  * Version number, as a string
  */
-#define VERSION "3.0.24"
+#define VERSION "3.0.32"
 
 /*
  * Status of the code: "alpha", "beta" or "stable".
@@ -84,7 +84,7 @@
 /*
  * Allows the use of an ACL to control access to the proxy by IP address.
  */
-//#define FEATURE_ACL 1
+#define FEATURE_ACL 1
 
 /*
  * Allow Privoxy to use accf_http(9) if supported.
@@ -95,7 +95,7 @@
  * Enables the web-based configuration (actionsfile) editor.  If you
  * have a shared proxy, you might want to turn this off.
  */
-//#define FEATURE_CGI_EDIT_ACTIONS 1
+#define FEATURE_CGI_EDIT_ACTIONS 1
 
 /*
  * Locally redirect remote script-redirect URLs
@@ -110,42 +110,8 @@
 /*
  * Allow blocking using images as well as HTML.
  * If you do not define this then everything is blocked as HTML.
- *
- * Note that this is required if you want to use FEATURE_IMAGE_DETECT_MSIE.
  */
-//#define FEATURE_IMAGE_BLOCKING 1
-
-/*
- * Detect image requests automatically for MSIE.  Will fall back to
- * other image-detection methods (i.e. "+image" permission) for other
- * browsers.
- *
- * You must also define FEATURE_IMAGE_BLOCKING to use this feature.
- *
- * It detects the following header pair as an image request:
- *
- * User-Agent: Mozilla/4.0 (compatible; MSIE 5.5; Windows NT 5.0)
- * Accept: * / *
- *
- * And the following as a HTML request:
- *
- * User-Agent: Mozilla/4.0 (compatible; MSIE 5.5; Windows NT 5.0)
- * Accept: image/gif, image/x-xbitmap, image/jpeg, image/pjpeg, * / *
- *
- * And no, I haven't got that backwards - IE is being weird.
- *
- * Known limitations:
- * 1) If you press shift-reload on a blocked HTML page, you get
- *    the image "blocked" page, not the HTML "blocked" page.
- * 2) Once an image "blocked" page has been sent, viewing it
- *    in it's own browser window *should* bring up the HTML
- *    "blocked" page, but it doesn't.  You need to clear the
- *    browser cache to get the HTML version again.
- *
- * These limitations are due to IE making inconsistent choices
- * about which "Accept:" header to send.
- */
-/* #undef FEATURE_IMAGE_DETECT_MSIE */
+#define FEATURE_IMAGE_BLOCKING 1
 
 /*
  * Use PNG instead of GIF for built-in images
@@ -160,7 +126,12 @@
 /*
  * Allow PCRE syntax in host patterns.
  */
-/* #undef FEATURE_EXTENDED_HOST_PATTERNS */
+/* #undef FEATURE_PCRE_HOST_PATTERNS */
+
+/*
+ * Gather extended statistics.
+ */
+/* #undef FEATURE_EXTENDED_STATISTICS */
 
 /*
  * Allow filtering with scripts and programs.
@@ -198,12 +169,12 @@
  * blocked or broken site - just change the setting in the config file,
  * or use the handy "Disable" menu option in the Windows GUI.
  */
-//#define FEATURE_TOGGLE 1
+#define FEATURE_TOGGLE 1
 
 /*
  * Allows the use of trust files.
  */
-//#define FEATURE_TRUST 1
+#define FEATURE_TRUST 1
 
 /*
  * Defined on Solaris only.  Makes the system libraries thread safe.
@@ -256,6 +227,15 @@
 /* #undef PCREPOSIX_H_IN_SUBDIR */
 
 
+/* Relevant for select(). Not honoured by all OS. */
+/* #undef FD_SETSIZE */
+
+/* If Brotli is used for decompression */
+/* #undef FEATURE_BROTLI */
+
+/* Define to enable support for client-specific tags. */
+#define FEATURE_CLIENT_TAGS 1
+
 /* Define to 1 to use compression through the zlib library. */
 /* #undef FEATURE_COMPRESSION */
 
@@ -265,11 +245,28 @@
 /* Define to 1 to allow to filter content with scripts and programs. */
 /* #undef FEATURE_EXTERNAL_FILTERS */
 
+/* if SSL/TLS is enabled */
+/* #undef FEATURE_HTTPS_INSPECTION */
+//#define FEATURE_HTTPS_INSPECTION 1
+
+/* if mbedTLS is enabled */
+/* #undef FEATURE_HTTPS_INSPECTION_MBEDTLS */
+
+/* if OpenSSL is enabled */
+/* #undef FEATURE_HTTPS_INSPECTION_OPENSSL */
+#define FEATURE_HTTPS_INSPECTION_OPENSSL 1
+
 /* Define to 1 to use zlib to decompress data before filtering. */
 #define FEATURE_ZLIB 1
 
+/* Define to make fuzzing more convenient. */
+/* #undef FUZZ */
+
 /* Define to 1 if you have the `access' function. */
 #define HAVE_ACCESS 1
+
+/* Define to 1 if you have the `arc4random' function. */
+#define HAVE_ARC4RANDOM 1
 
 /* Define to 1 if you have the <arpa/inet.h> header file. */
 #define HAVE_ARPA_INET_H 1
@@ -279,6 +276,12 @@
 
 /* Define to 1 if you have the `bcopy' function. */
 #define HAVE_BCOPY 1
+
+/* Define to 1 if you have the <brotli/decode.h> header file. */
+/* #undef HAVE_BROTLI_DECODE_H */
+
+/* Define to 1 if you have the `calloc' function. */
+#define HAVE_CALLOC 1
 
 /* Define to 1 if you have the <dirent.h> header file, and it defines `DIR'.
    */
@@ -314,6 +317,12 @@
 /* Define to 1 if you have the <inttypes.h> header file. */
 #define HAVE_INTTYPES_H 1
 
+/* Define to 1 if you have the `brotlidec' library (-lbrotlidec). */
+/* #undef HAVE_LIBBROTLIDEC */
+
+/* Define to 1 if you have the `crypto' library (-lcrypto). */
+/* #undef HAVE_LIBCRYPTO */
+
 /* Define to 1 if you have the `nsl' library (-lnsl). */
 /* #undef HAVE_LIBNSL */
 
@@ -337,6 +346,9 @@
 
 /* Define to 1 if you have the `memset' function. */
 #define HAVE_MEMSET 1
+
+/* Define to 1 if you have the `nanosleep' function. */
+#define HAVE_NANOSLEEP 1
 
 /* Define to 1 if you have the <ndir.h> header file, and it defines `DIR'. */
 /* #undef HAVE_NDIR_H */
@@ -476,6 +488,9 @@
 /* Define to the version of this package. */
 #define PACKAGE_VERSION ""
 
+/* Define to statically link to pcre library on Windows. */
+/* #undef PCRE_STATIC */
+
 /* Define as the return type of signal handlers (`int' or `void'). */
 #define RETSIGTYPE void
 
@@ -493,6 +508,9 @@
 
 /* The size of `size_t', as computed by sizeof. */
 #define SIZEOF_SIZE_T 8
+
+/* The size of `time_t', as computed by sizeof. */
+#define SIZEOF_TIME_T 8
 
 /* Define to statically link to internal outdated pcre on Windows. */
 /* #undef STATIC_PCRE */

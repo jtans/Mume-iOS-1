@@ -1,6 +1,5 @@
 #ifndef JCC_H_INCLUDED
 #define JCC_H_INCLUDED
-#define JCC_H_VERSION "$Id: jcc.h,v 1.35 2014/06/02 06:22:21 fabiankeil Exp $"
 /*********************************************************************
  *
  * File        :  $Source: /cvsroot/ijbswa/current/jcc.h,v $
@@ -9,7 +8,7 @@
  *                the main connection-handling function.
  *
  * Copyright   :  Written by and Copyright (C) 2001-2014 the
- *                Privoxy team. http://www.privoxy.org/
+ *                Privoxy team. https://www.privoxy.org/
  *
  *                Based on the Internet Junkbuster originally written
  *                by and Copyright (C) 1997 Anonymous Coders and
@@ -35,7 +34,6 @@
  *
  *********************************************************************/
 
-#include "project.h"
 
 struct client_state;
 struct file_list;
@@ -53,6 +51,7 @@ extern struct file_list    files[1];
 #ifdef unix
 extern const char *pidfile;
 #endif
+extern int daemon_mode;
 
 #ifdef FEATURE_GRACEFUL_TERMINATION
 extern int g_terminate;
@@ -72,8 +71,6 @@ typedef CRITICAL_SECTION privoxy_mutex_t;
 
 #endif
 
-static struct configuration_spec *config;
-
 extern void privoxy_mutex_lock(privoxy_mutex_t *mutex);
 extern void privoxy_mutex_unlock(privoxy_mutex_t *mutex);
 
@@ -83,6 +80,15 @@ extern privoxy_mutex_t connection_reuse_mutex;
 
 #ifdef FEATURE_EXTERNAL_FILTERS
 extern privoxy_mutex_t external_filter_mutex;
+#endif
+
+#ifdef FEATURE_CLIENT_TAGS
+extern privoxy_mutex_t client_tags_mutex;
+#endif
+
+#ifdef FEATURE_EXTENDED_STATISTICS
+extern privoxy_mutex_t filter_statistics_mutex;
+extern privoxy_mutex_t block_statistics_mutex;
 #endif
 
 #ifndef HAVE_GMTIME_R
@@ -101,22 +107,26 @@ extern privoxy_mutex_t resolver_mutex;
 extern privoxy_mutex_t rand_mutex;
 #endif /* ndef HAVE_RANDOM */
 
+#ifdef FEATURE_HTTPS_INSPECTION
+extern privoxy_mutex_t certificate_mutex;
+extern privoxy_mutex_t ssl_init_mutex;
+#endif
+
 #endif /* FEATURE_PTHREAD */
 
 /* Functions */
 
-typedef void (*shadowpath_cb) (int fd, void*);
+#ifdef __MINGW32__
+int real_main(int argc, char **argv);
+#else
+int privoxy_main(int argc, char **argv);
+#endif
 
-extern int shadowpath_main(char *conf_path, struct forward_spec *forward_proxy_list, shadowpath_cb cb, void *data);
-
-extern struct log_client_states *log_clients;
-
-extern void log_time_stage(struct client_state *csp, enum time_stage stage);
-extern void log_request_error(struct client_state *csp, int error_code);
-
-/* Revision control strings from this header and associated .c file */
-extern const char jcc_rcs[];
-extern const char jcc_h_rcs[];
+#ifdef FUZZ
+extern int fuzz_client_request(struct client_state *csp, char *fuzz_input_file);
+extern int fuzz_server_response(struct client_state *csp, char *fuzz_input_file);
+extern int fuzz_chunked_transfer_encoding(struct client_state *csp, char *fuzz_input_file);
+#endif
 
 #endif /* ndef JCC_H_INCLUDED */
 

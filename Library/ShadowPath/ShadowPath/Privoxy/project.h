@@ -1,7 +1,5 @@
 #ifndef PROJECT_H_INCLUDED
 #define PROJECT_H_INCLUDED
-/** Version string. */
-#define PROJECT_H_VERSION "$Id: project.h,v 1.212 2016/01/16 12:30:43 fabiankeil Exp $"
 /*********************************************************************
  *
  * File        :  $Source: /cvsroot/ijbswa/current/project.h,v $
@@ -11,7 +9,7 @@
  *                (though it does declare some macros).
  *
  * Copyright   :  Written by and Copyright (C) 2001-2014 the
- *                Privoxy team. http://www.privoxy.org/
+ *                Privoxy team. https://www.privoxy.org/
  *
  *                Based on the Internet Junkbuster originally written
  *                by and Copyright (C) 1997 Anonymous Coders and
@@ -44,7 +42,38 @@
 /* Need time_t for file_list */
 #include <time.h>
 /* Needed for pcre choice */
-#include "sp_config.h"
+#include "config.h"
+
+#ifdef FEATURE_HTTPS_INSPECTION
+/*
+* Macros for SSL structures
+*/
+#define CERT_INFO_BUF_SIZE         4096
+#define CERT_FILE_BUF_SIZE         16384
+#define ISSUER_NAME_BUF_SIZE       2048
+#define HASH_OF_HOST_BUF_SIZE      16
+#endif /* FEATURE_HTTPS_INSPECTION */
+
+#ifdef FEATURE_HTTPS_INSPECTION_MBEDTLS
+#include "mbedtls/net_sockets.h"
+#include "mbedtls/entropy.h"
+#include "mbedtls/ctr_drbg.h"
+
+#if defined(MBEDTLS_SSL_CACHE_C)
+#include "mbedtls/ssl_cache.h"
+#endif
+#endif /* FEATURE_HTTPS_INSPECTION_MBEDTLS */
+
+#ifdef FEATURE_HTTPS_INSPECTION_OPENSSL
+#ifdef _WIN32
+#include <wincrypt.h>
+#undef X509_NAME
+#undef X509_EXTENSIONS
+#endif
+#include <openssl/ssl.h>
+#include <openssl/bio.h>
+#include <openssl/err.h>
+#endif /* FEATURE_HTTPS_INSPECTION_OPENSSL */
 
 /* Need for struct sockaddr_storage */
 #ifdef HAVE_RFC2553
@@ -53,7 +82,6 @@
 #    include <sys/socket.h>
 #  else
 #    include <stdint.h>
-#    include <winsock2.h>
 #    include <ws2tcpip.h>
      typedef unsigned short in_port_t;
 #  endif
@@ -72,7 +100,7 @@
 #  ifdef PCRE_H_IN_SUBDIR
 #    include <pcre/pcre.h>
 #  else
-#    include "pcre.h"
+#    include <pcre.h>
 #  endif
 #endif
 
@@ -88,11 +116,9 @@
 #  ifdef PCRE_H_IN_SUBDIR
 #    include <pcre/pcreposix.h>
 #  else
-#    include "pcreposix.h"
+#    include <pcreposix.h>
 #  endif
 #endif
-
-//#include <regex.h>
 
 #ifdef _WIN32
 /*
@@ -131,11 +157,6 @@ typedef int jb_socket;
 #endif /* ndef _WIN32 */
 
 
-#include "radix.h"
-#include "maxminddb.h"
-
-extern MMDB_s mmdb;
-
 /**
  * A standard error code.  This should be JB_ERR_OK or one of the JB_ERR_xxx
  * series of errors.
@@ -157,7 +178,7 @@ typedef enum privoxy_err jb_err;
 /**
  * This macro is used to free a pointer that may be NULL.
  * It also sets the variable to NULL after it's been freed.
- * The paramater should be a simple variable without side effects.
+ * The parameter should be a simple variable without side effects.
  */
 #define freez(X)  { if(X) { free((void*)X); X = NULL ; } }
 
@@ -258,7 +279,7 @@ struct map_entry
 
 /**
  * A map from a string to another string.
- * This is used for the paramaters passed in a HTTP GET request, and
+ * This is used for the parameters passed in a HTTP GET request, and
  * to store the exports when the CGI interface is filling in a template.
  */
 struct map
@@ -269,7 +290,34 @@ struct map
    struct map_entry *last;
 };
 
+#ifdef FEATURE_HTTPS_INSPECTION_MBEDTLS
+/*
+ * Struct of attributes necessary for TLS/SSL connection
+ */
+typedef struct {
+   mbedtls_ssl_context      ssl;
+   mbedtls_ssl_config       conf;
+   mbedtls_net_context      socket_fd;
+   mbedtls_x509_crt         server_cert;
+   mbedtls_x509_crt         ca_cert;
+   mbedtls_pk_context       prim_key;
+   int                     *ciphersuites_list;
 
+   #if defined(MBEDTLS_SSL_CACHE_C)
+      mbedtls_ssl_cache_context cache;
+   #endif
+} mbedtls_connection_attr;
+#endif /* FEATURE_HTTPS_INSPECTION_MBEDTLS */
+
+#ifdef FEATURE_HTTPS_INSPECTION_OPENSSL
+/*
+ * Struct of attributes necessary for TLS/SSL connection
+ */
+typedef struct {
+   SSL_CTX *ctx;
+   BIO *bio;
+} openssl_connection_attr;
+#endif /* FEATURE_HTTPS_INSPECTION_OPENSSL */
 /**
  * A HTTP request.  This includes the method (GET, POST) and
  * the parsed URL.
@@ -284,27 +332,41 @@ struct http_request
    char *ocmd;     /**< Backup of original cmd for CLF logging */
    char *gpc;      /**< HTTP method: GET, POST, ... */
    char *url;      /**< The URL */
-   char *ver;      /**< Protocol version */
+   char *version;  /**< Protocol version */
    int status;     /**< HTTP Status */
 
-   char *host;     /**< Host part of URL */
    int   port;     /**< Port of URL or 80 (default) */
+   char *host;     /**< Host part of URL */
    char *path;     /**< Path of URL */
    char *hostport; /**< host[:port] */
-   int   ssl;      /**< Flag if protocol is https */
-
-   char *remote_host_ip_addr_str; /**< String with dotted decimal representation
-                             of remote host's IP. NULL before connect_to() */
 
    char *host_ip_addr_str; /**< String with dotted decimal representation
                                 of host's IP. NULL before connect_to() */
 
-#ifndef FEATURE_EXTENDED_HOST_PATTERNS
    char  *dbuffer; /**< Buffer with '\0'-delimited domain name.           */
    char **dvec;    /**< List of pointers to the strings in dbuffer.       */
    int    dcount;  /**< How many parts to this domain? (length of dvec)   */
-#endif /* ndef FEATURE_EXTENDED_HOST_PATTERNS */
+
+#ifdef FEATURE_HTTPS_INSPECTION
+   int client_ssl;                                                  /**< Flag if we should communicate with client over ssl   */
+   int server_ssl;                                                  /**< Flag if we should communicate with server over ssl   */
+   unsigned char hash_of_host_hex[(HASH_OF_HOST_BUF_SIZE * 2) + 1]; /**< chars for hash in hex string and one for '\0'       */
+   unsigned char hash_of_host[HASH_OF_HOST_BUF_SIZE+1];             /**< chars for bytes of hash and one for '\0'            */
+#endif
+   short int   ssl;      /**< Flag if protocol is https */
 };
+
+
+#ifdef FEATURE_HTTPS_INSPECTION
+/*
+ * Struct for linked list containing certificates
+ */
+typedef struct certs_chain {
+   char info_buf[CERT_INFO_BUF_SIZE];    /* text info about properties of certificate               */
+   char file_buf[CERT_FILE_BUF_SIZE];    /* buffer for whole certificate - format to save in file   */
+   struct certs_chain *next;             /* next certificate in chain of trust                      */
+} certs_chain_t;
+#endif
 
 /**
  * Reasons for generating a http_response instead of delivering
@@ -345,14 +407,14 @@ struct http_response
 
 struct url_spec
 {
-#ifdef FEATURE_EXTENDED_HOST_PATTERNS
+#ifdef FEATURE_PCRE_HOST_PATTERNS
    regex_t *host_regex;/**< Regex for host matching                          */
-#else
+   enum host_regex_type { VANILLA_HOST_PATTERN, PCRE_HOST_PATTERN } host_regex_type;
+#endif /* defined FEATURE_PCRE_HOST_PATTERNS */
+   int    dcount;      /**< How many parts to this domain? (length of dvec)   */
    char  *dbuffer;     /**< Buffer with '\0'-delimited domain name, or NULL to match all hosts. */
    char **dvec;        /**< List of pointers to the strings in dbuffer.       */
-   int    dcount;      /**< How many parts to this domain? (length of dvec)   */
    int    unanchored;  /**< Bitmap - flags are ANCHOR_LEFT and ANCHOR_RIGHT.  */
-#endif /* defined FEATURE_EXTENDED_HOST_PATTERNS */
 
    char  *port_list;   /**< List of acceptable ports, or NULL to match all ports */
 
@@ -406,6 +468,9 @@ struct pattern_spec
 /** Pattern spec bitmap: It's a NO-RESPONSE-TAG pattern. */
 #define PATTERN_SPEC_NO_RESPONSE_TAG_PATTERN 0x00000008UL
 
+/** Pattern spec bitmap: It's a CLIENT-TAG pattern. */
+#define PATTERN_SPEC_CLIENT_TAG_PATTERN      0x00000010UL
+
 /**
  * An I/O buffer.  Holds a string which can be appended to, and can have data
  * removed from the beginning.
@@ -419,13 +484,6 @@ struct iob
 };
 
 
-/**
- * Return the number of bytes in the I/O buffer associated with the passed
- * I/O buffer. May be zero.
- */
-#define IOB_PEEK(IOB) ((IOB->cur > IOB->eod) ? (IOB->eod - IOB->cur) : 0)
-
-
 /* Bits for csp->content_type bitmask: */
 #define CT_TEXT    0x0001U /**< Suitable for pcrs filtering. */
 #define CT_GIF     0x0002U /**< Suitable for GIF filtering.  */
@@ -437,13 +495,14 @@ struct iob
  */
 #define CT_GZIP    0x0010U /**< gzip-compressed data. */
 #define CT_DEFLATE 0x0020U /**< zlib-compressed data. */
+#define CT_BROTLI  0x0040U /**< Brotli-compressed data. */
 
 /**
  * Flag to signal that the server declared the content type,
  * so we can differentiate between unknown and undeclared
  * content types.
  */
-#define CT_DECLARED 0x0040U
+#define CT_DECLARED 0x0080U
 
 /**
  * The mask which includes all actions.
@@ -501,7 +560,7 @@ struct iob
 #define ACTION_CRUNCH_CLIENT_HEADER                  0x00200000UL
 /** Action bitmap: Enable text mode by force */
 #define ACTION_FORCE_TEXT_MODE                       0x00400000UL
-/** Action bitmap: Enable text mode by force */
+/** Action bitmap: Remove the "If-None-Match" header. */
 #define ACTION_CRUNCH_IF_NONE_MATCH                  0x00800000UL
 /** Action bitmap: Enable content-disposition crunching */
 #define ACTION_HIDE_CONTENT_DISPOSITION              0x01000000UL
@@ -511,11 +570,12 @@ struct iob
 #define ACTION_HIDE_ACCEPT_LANGUAGE                  0x04000000UL
 /** Action bitmap: Limit the cookie lifetime */
 #define ACTION_LIMIT_COOKIE_LIFETIME                 0x08000000UL
-
-#define ACTION_FORWARD_RESOLVED_IP                   0x10000000UL
-
-#define ACTION_FORWARD_RULE                          0x20000000UL
-
+/** Action bitmap: Delay writes */
+#define ACTION_DELAY_RESPONSE                        0x10000000UL
+/** Action bitmap: Turn https inspection on */
+#define ACTION_HTTPS_INSPECTION                      0x20000000UL
+/** Action bitmap: Turn certificates verification off */
+#define ACTION_IGNORE_CERTIFICATE_ERRORS             0x40000000UL
 
 /** Action string index: How to deanimate GIFs */
 #define ACTION_STRING_DEANIMATE             0
@@ -555,13 +615,10 @@ struct iob
 #define ACTION_STRING_CHANGE_X_FORWARDED_FOR 17
 /** Action string index: how many minutes cookies should be valid. */
 #define ACTION_STRING_LIMIT_COOKIE_LIFETIME 18
-/** Action string index: forward resolved ip. */
-#define ACTION_STRING_FORWARD_RESOLVED_IP    19
-/** Action string index: forward rule. */
-#define ACTION_STRING_FORWARD_RULE          20
+/** Action string index: how many milliseconds writes should be delayed. */
+#define ACTION_STRING_DELAY_RESPONSE       19
 /** Number of string actions. */
-#define ACTION_STRING_COUNT                21
-
+#define ACTION_STRING_COUNT                20
 
 
 /* To make the ugly hack in sed easier to understand */
@@ -582,8 +639,12 @@ struct iob
 #define ACTION_MULTI_SERVER_HEADER_TAGGER    5
 /** Number of multi-string actions. */
 #define ACTION_MULTI_EXTERNAL_FILTER         6
+/** Index into current_action_spec::multi[] for tags to suppress. */
+#define ACTION_MULTI_SUPPRESS_TAG            7
+/** Index into current_action_spec::multi[] for client body filters to apply. */
+#define ACTION_MULTI_CLIENT_BODY_FILTER      8
 /** Number of multi-string actions. */
-#define ACTION_MULTI_COUNT                   7
+#define ACTION_MULTI_COUNT                   9
 
 
 /**
@@ -598,7 +659,7 @@ struct current_action_spec
    unsigned long flags;
 
    /**
-    * Paramaters for those actions that require them.
+    * Parameters for those actions that require them.
     * Each entry is valid if & only if the corresponding entry in "flags" is
     * set.
     */
@@ -636,13 +697,6 @@ struct action_spec
    struct list multi_add[ACTION_MULTI_COUNT][1];
 };
 
-enum forward_routing {
-    ROUTE_NONE = 0,
-    ROUTE_DIRECT,
-    ROUTE_PROXY,
-    ROUTE_BLOCK,
-};
-
 
 /**
  * This structure is used to store action files.
@@ -654,25 +708,17 @@ enum forward_routing {
  */
 struct url_actions
 {
-    struct pattern_spec url[1]; /**< The URL or tag pattern. */
+   struct pattern_spec url[1]; /**< The URL or tag pattern. */
 
-    char *rule;
-
-    enum forward_routing routing;
-
-    char *geoip;
-
-    radix_tree_t *tree;
-
-    struct action_spec *action; /**< Action settings that might be shared with
+   struct action_spec *action; /**< Action settings that might be shared with
                                     the list entry before or after the current
                                     one and can't be free'd willy nilly. */
 
-    struct url_actions *next;   /**< Next action section in file, or NULL. */
+   struct url_actions *next;   /**< Next action section in file, or NULL. */
 };
 
 enum forwarder_type {
-//   /**< Don't use a SOCKS server, forward to a HTTP proxy directly */
+   /**< Don't use a SOCKS server, forward to a HTTP proxy directly */
    SOCKS_NONE =  0,
    /**< original SOCKS 4 protocol              */
    SOCKS_4    = 40,
@@ -720,11 +766,12 @@ struct reusable_connection
    enum forwarder_type forwarder_type;
    char *forward_host;
    int  forward_port;
-    
-   char *gateway_host;
+
    int  gateway_port;
+   char *gateway_host;
    char *auth_username;
    char *auth_password;
+
 };
 
 
@@ -888,12 +935,16 @@ struct reusable_connection
 #define CSP_FLAG_UNSUPPORTED_CLIENT_EXPECTATION     0x02000000U
 
 /**
- * Flag for csp->flags: Set if we answered the request ourselve.
+ * Flag for csp->flags: Set if we answered the request ourselves.
  */
 #define CSP_FLAG_CRUNCHED                           0x04000000U
 
-#define CSP_FLAG_LOG_REQUEST                        0x08000000U
-
+#ifdef FUZZ
+/**
+ * Flag for csp->flags: Set if we are working with fuzzed input
+ */
+#define CSP_FLAG_FUZZED_INPUT                       0x08000000U
+#endif
 
 /*
  * Flags for use in return codes of child processes
@@ -915,7 +966,7 @@ struct reusable_connection
  * Maximum number of actions/filter files.  This limit is arbitrary - it's just used
  * to size an array.
  */
-#define MAX_AF_FILES 30
+#define MAX_AF_FILES 100
 
 /**
  * Maximum number of sockets to listen to.  This limit is arbitrary - it's just used
@@ -923,157 +974,177 @@ struct reusable_connection
  */
 #define MAX_LISTENING_SOCKETS 10
 
-enum time_stage {
-    TIME_STAGE_INIT = 0,
-    TIME_STAGE_CLOSED,
-    TIME_STAGE_URL_RULE_MATCH_START,
-    TIME_STAGE_URL_RULE_MATCH_END,
-    TIME_STAGE_IP_RULE_MATCH_START,
-    TIME_STAGE_IP_RULE_MATCH_END,
-    TIME_STAGE_DNS_IP_RULE_MATCH_START,
-    TIME_STAGE_DNS_IP_RULE_MATCH_END,
-
-    TIME_STAGE_DNS_START,
-    TIME_STAGE_DNS_FAIL,
-    TIME_STAGE_DNS_END,
-    TIME_STAGE_REMOTE_START,
-    TIME_STAGE_REMOTE_CONNECTED,
-
-    TIME_STAGE_GLOBAL_MODE,
-    TIME_STAGE_NON_GLOBAL_MODE,
-
-    TIME_STAGE_PROXY_DNS_START,
-    TIME_STAGE_PROXY_DNS_FAIL,
-    TIME_STAGE_PROXY_DNS_END,
-    TIME_STAGE_PROXY_START,
-    TIME_STAGE_PROXY_CONNECTED,
-
-    TIME_STAGE_IPV6,
-
-    TIME_STAGE_COUNT
+struct ssl_attr {
+#ifdef FEATURE_HTTPS_INSPECTION_MBEDTLS
+   mbedtls_connection_attr  mbedtls_attr; /* Mbed TLS attrs*/
+#endif /* FEATURE_HTTPS_INSPECTION_MBEDTLS */
+#ifdef FEATURE_HTTPS_INSPECTION_OPENSSL
+   openssl_connection_attr  openssl_attr; /* OpenSSL atrrs */
+#endif /* FEATURE_HTTPS_INSPECTION_OPENSSL */
 };
-
-enum forward_stage {
-    FORWARD_STAGE_NONE = 0,
-    FORWARD_STAGE_URL,
-    FORWARD_STAGE_IP,
-    FORWARD_STAGE_DNS_POLLUTION,
-    FORWARD_STAGE_DNS_FAILURE,
-};
-
 /**
  * The state of a Privoxy processing thread.
  */
 struct client_state
 {
-    /** The proxy's configuration */
-    struct configuration_spec * config;
+   /** The proxy's configuration */
+   struct configuration_spec * config;
 
-    /** The actions to perform on the current request */
-    struct current_action_spec  action[1];
+   /** The actions to perform on the current request */
+   struct current_action_spec  action[1];
 
-    /** socket to talk to client (web browser) */
-    jb_socket cfd;
+   /** socket to talk to client (web browser) */
+   jb_socket cfd;
 
-    /** Number of requests received on the client socket. */
-    unsigned int requests_received_total;
+   /** Number of requests received on the client socket. */
+   unsigned int requests_received_total;
 
-    /** current connection to the server (may go through a proxy) */
-    struct reusable_connection server_connection;
+   /** current connection to the server (may go through a proxy) */
+   struct reusable_connection server_connection;
 
-    /** Multi-purpose flag container, see CSP_FLAG_* above */
-    unsigned int flags;
+   /** Multi-purpose flag container, see CSP_FLAG_* above */
+   unsigned int flags;
 
-    /** Client PC's IP address, as reported by the accept() function.
+   /** MIME-Type key, see CT_* above */
+   unsigned int content_type;
+
+   /** Client PC's IP address, as reported by the accept() function.
        As a string. */
-    char *ip_addr_str;
+   char *ip_addr_str;
 #ifdef HAVE_RFC2553
-    /** Client PC's TCP address, as reported by the accept() function.
+   /** Client PC's TCP address, as reported by the accept() function.
        As a sockaddr. */
-    struct sockaddr_storage tcp_addr;
+   struct sockaddr_storage tcp_addr;
 #else
-    /** Client PC's IP address, as reported by the accept() function.
+   /** Client PC's IP address, as reported by the accept() function.
        As a number. */
-    unsigned long ip_addr_long;
+   unsigned long ip_addr_long;
 #endif /* def HAVE_RFC2553 */
 
-    /** The URL that was requested */
-    struct http_request http[1];
+   /** The host name and port (as a string of the form '<hostname>:<port>')
+       of the server socket to which the client connected. */
+   char *listen_addr_str;
 
-    // Time Logging
-    enum time_stage current_time_stage;
-    double time_stages[TIME_STAGE_COUNT];
+   /** The URL that was requested */
+   struct http_request http[1];
 
-    /*
+   /*
     * The final forwarding settings.
     * XXX: Currently this is only used for forward-override,
     * so we can free the space in sweep.
     */
-    struct forward_spec *fwd;
-    enum forward_stage current_forward_stage;
-    int is_ipv6;
+   struct forward_spec * fwd;
 
-    char *rule;
+   /** An I/O buffer used for buffering data read from the server */
+   /* XXX: should be renamed to server_iob */
+   struct iob iob[1];
 
-    enum forward_routing routing;
+   struct ssl_attr ssl_server_attr; /* attributes for connection to server */
+   struct ssl_attr ssl_client_attr; /* attributes for connection to client */
 
-    int forward_determined;
+   /** An I/O buffer used for buffering data read from the client */
+   struct iob client_iob[1];
 
-    /** An I/O buffer used for buffering data read from the server */
-    /* XXX: should be renamed to server_iob */
-    struct iob iob[1];
+   /** Buffer used to briefly store data read from the network
+    *  before forwarding or processing it.
+    */
+   char *receive_buffer;
+   size_t receive_buffer_size;
 
-    /** An I/O buffer used for buffering data read from the client */
-    struct iob client_iob[1];
+   /** List of all headers for this request */
+   struct list headers[1];
 
-    /** List of all headers for this request */
-    struct list headers[1];
+#ifdef FEATURE_HTTPS_INSPECTION
+   /** List of all encrypted headers for this request */
+   struct list https_headers[1];
+#endif
 
-    /** List of all tags that apply to this request */
-    struct list tags[1];
+   /** List of all tags that apply to this request */
+   struct list tags[1];
 
-    /** MIME-Type key, see CT_* above */
-    unsigned int content_type;
+#ifdef FEATURE_CLIENT_TAGS
+   /** List of all tags that apply to this client (assigned based on address) */
+   struct list client_tags[1];
+   /** The address of the client the request (presumably) came from.
+    *  Either the address returned by accept(), or the address provided
+    *  with the X-Forwarded-For header, provided Privoxy has been configured
+    *  to use it.
+    */
+   char *client_address;
+#endif
 
-    /** Actions files associated with this client */
-    struct file_list *actions_list[MAX_AF_FILES];
+   /** Actions files associated with this client */
+   struct file_list *actions_list[MAX_AF_FILES];
 
-    /** pcrs job files. */
-    struct file_list *rlist[MAX_AF_FILES];
+   /** pcrs job files. */
+   struct file_list *rlist[MAX_AF_FILES];
 
-    /** Length after content modification. */
-    unsigned long long content_length;
+   /** Length after content modification. */
+   unsigned long long content_length;
 
-    /* XXX: is this the right location? */
+   /* XXX: is this the right location? */
 
-    /** Expected length of content after which we
+   /** Expected length of content after which we
     * should stop reading from the server socket.
     */
-    unsigned long long expected_content_length;
+   unsigned long long expected_content_length;
 
-    /** Expected length of content after which we
+   /** Expected length of content after which we
     *  should stop reading from the client socket.
     */
-    unsigned long long expected_client_content_length;
+   unsigned long long expected_client_content_length;
 
 #ifdef FEATURE_TRUST
 
-    /** Trust file. */
-    struct file_list *tlist;
+   /** Trust file. */
+   struct file_list *tlist;
 
 #endif /* def FEATURE_TRUST */
 
-    /**
+   /**
     * Failure reason to embedded in the CGI error page,
     * or NULL. Currently only used for socks errors.
     */
-    char *error_message;
-};
+   char *error_message;
 
-extern struct url_actions *po_url_rules;
-extern struct url_actions *po_ip_rules;
-extern struct url_actions *po_dns_ip_rules;
-extern struct url_actions *po_dns_ip_rules_tail;
+#ifdef FEATURE_HTTPS_INSPECTION
+   /* Result of server certificate verification
+    *
+    * Values for flag determining certificate validity
+    * are compatible with return value of function
+    * mbedtls_ssl_get_verify_result() for mbedtls
+    * and SSL_get_verify_result() for openssl.
+    * There are no values for "invalid certificate", they are
+    * set by the functions mentioned above.
+    */
+#define SSL_CERT_VALID          0
+#ifdef FEATURE_HTTPS_INSPECTION_MBEDTLS
+#define SSL_CERT_NOT_VERIFIED   0xFFFFFFFF
+   uint32_t server_cert_verification_result;
+#endif /* FEATURE_HTTPS_INSPECTION_MBEDTLS */
+#ifdef FEATURE_HTTPS_INSPECTION_OPENSSL
+#define SSL_CERT_NOT_VERIFIED    ~0L
+   long server_cert_verification_result;
+#endif /* FEATURE_HTTPS_INSPECTION_OPENSSL */
+
+   /* Flag for certificate validity checking */
+   int dont_verify_certificate;
+
+   /*
+    * Flags if SSL connection with server or client is opened.
+    * Thanks to this flags, we can call function to close both connections
+    * and we don't have to care about more details.
+    */
+   short int ssl_with_server_is_opened;
+   short int ssl_with_client_is_opened;
+
+   /*
+    * Server certificate chain of trust including strings with certificates
+    * information and string with whole certificate file
+    */
+   struct certs_chain server_certs_chain;
+#endif
+};
 
 /**
  * List of client states so the main thread can keep
@@ -1083,12 +1154,6 @@ struct client_states
 {
    struct client_states *next;
    struct client_state csp;
-};
-
-struct log_client_states
-{
-    struct log_client_states *next;
-    struct client_state *csp;
 };
 
 /**
@@ -1188,63 +1253,39 @@ struct block_spec
 
 #endif /* def FEATURE_TRUST */
 
-
-/**
- * An IP address pattern.  Used to specify networks in the ACL.
- */
-struct access_control_addr
-{
-#ifdef HAVE_RFC2553
-    struct sockaddr_storage addr; /* <The TCP address in network order. */
-    struct sockaddr_storage mask; /* <The TCP mask in network order. */
-#else
-    unsigned long addr;  /**< The IP address as an integer. */
-    unsigned long mask;  /**< The network mask as an integer. */
-    unsigned long port;  /**< The port number. */
-#endif /* HAVE_RFC2553 */
-};
-
-
 /**
  * How to forward a connection to a parent proxy.
  */
 struct forward_spec
 {
-    /** URL pattern that this forward_spec is for. */
-    struct pattern_spec url[1];
+   /** URL pattern that this forward_spec is for. */
+   struct pattern_spec url[1];
 
-    /** Connection type.  Must be SOCKS_NONE, SOCKS_4, SOCKS_4A or SOCKS_5. */
-    enum forwarder_type type;
+   /** Connection type.  Must be SOCKS_NONE, SOCKS_4, SOCKS_4A or SOCKS_5. */
+   enum forwarder_type type;
 
-    /** SOCKS server hostname.  Only valid if "type" is SOCKS_4 or SOCKS_4A. */
-    char *gateway_host;
+   /** SOCKS server port. */
+   int   gateway_port;
 
-    /** SOCKS server port. */
-    int   gateway_port;
-    
-    /** SOCKS5 username. */
-    char *auth_username;
+   /** SOCKS server hostname.  Only valid if "type" is SOCKS_4 or SOCKS_4A. */
+   char *gateway_host;
 
-    /** SOCKS5 password. */
-    char *auth_password;
+   /** SOCKS5 username. */
+   char *auth_username;
 
-    /** Parent HTTP proxy hostname, or NULL for none. */
-    char *forward_host;
+   /** SOCKS5 password. */
+   char *auth_password;
 
-    /** Parent HTTP proxy port. */
-    int   forward_port;
+   /** Parent HTTP proxy hostname, or NULL for none. */
+   char *forward_host;
 
-    /** Next entry in the linked list. */
-    struct forward_spec *next;
+   /** Parent HTTP proxy port. */
+   int   forward_port;
 
-    int is_default;
-
-    int should_unload;
+   /** Next entry in the linked list. */
+   struct forward_spec *next;
 };
 
-extern struct forward_spec *proxy_list;
-
-extern struct forward_spec fwd_default[1]; /* Zero'ed due to being static. */
 
 /* Supported filter types */
 enum filter_type
@@ -1254,16 +1295,18 @@ enum filter_type
    FT_SERVER_HEADER_FILTER = 2,
    FT_CLIENT_HEADER_TAGGER = 3,
    FT_SERVER_HEADER_TAGGER = 4,
+   FT_SUPPRESS_TAG = 5,
+   FT_CLIENT_BODY_FILTER = 6,
 #ifdef FEATURE_EXTERNAL_FILTERS
-   FT_EXTERNAL_CONTENT_FILTER = 5,
+   FT_EXTERNAL_CONTENT_FILTER = 7,
 #endif
    FT_INVALID_FILTER       = 42,
 };
 
 #ifdef FEATURE_EXTERNAL_FILTERS
-#define MAX_FILTER_TYPES        6
+#define MAX_FILTER_TYPES        8
 #else
-#define MAX_FILTER_TYPES        5
+#define MAX_FILTER_TYPES        7
 #endif
 
 /**
@@ -1291,6 +1334,21 @@ struct re_filterfile_spec
 #define ACL_DENY     2  /**< Reject connection request */
 
 /**
+ * An IP address pattern.  Used to specify networks in the ACL.
+ */
+struct access_control_addr
+{
+#ifdef HAVE_RFC2553
+   struct sockaddr_storage addr; /* <The TCP address in network order. */
+   struct sockaddr_storage mask; /* <The TCP mask in network order. */
+#else
+   unsigned long addr;  /**< The IP address as an integer. */
+   unsigned long mask;  /**< The network mask as an integer. */
+   unsigned long port;  /**< The port number. */
+#endif /* HAVE_RFC2553 */
+};
+
+/**
  * An access control list (ACL) entry.
  *
  * This is a linked list.
@@ -1300,7 +1358,7 @@ struct access_control_list
    struct access_control_addr src[1];  /**< Client IP address */
    struct access_control_addr dst[1];  /**< Website or parent proxy IP address */
 #ifdef HAVE_RFC2553
-   int wildcard_dst;                   /** < dst address is wildcard */
+   short wildcard_dst;                 /** < dst address is wildcard */
 #endif
 
    short action;                       /**< ACL_PERMIT or ACL_DENY */
@@ -1313,6 +1371,15 @@ struct access_control_list
 /** Maximum number of loaders (actions, re_filter, ...) */
 #define NLOADERS 8
 
+/**
+ * This struct represents a client-spcific-tag and it's description
+ */
+struct client_tag_spec
+{
+   char *name;        /**< Name from "client-specific-tag bla" directive */
+   char *description; /**< Description from "client-specific-tag-description " directive */
+   struct client_tag_spec *next; /**< The pointer for chaining. */
+};
 
 /** configuration_spec::feature_flags: CGI actions editor. */
 #define RUNTIME_FEATURE_CGI_EDIT_ACTIONS             1U
@@ -1369,17 +1436,20 @@ struct configuration_spec
    /** Bitmask of features that can be controlled through the config file. */
    unsigned feature_flags;
 
+   /** Nonzero if we need to bind() to the new port. */
+   int need_bind;
+
    /** The log file name. */
    const char *logfile;
 
    /** The config file directory. */
    const char *confdir;
 
-    /** The mmdbpath. */
-    const char *mmdbpath;
-
    /** The directory for customized CGI templates. */
    const char *templdir;
+
+   /** "Cross-origin resource sharing" (CORS) allowed origin */
+   const char *cors_allowed_origin;
 
 #ifdef FEATURE_EXTERNAL_FILTERS
    /** The template used to create temporary files. */
@@ -1419,11 +1489,25 @@ struct configuration_spec
    /** IP addresses to bind to.  Defaults to HADDR_DEFAULT == 127.0.0.1. */
    const char *haddr[MAX_LISTENING_SOCKETS];
 
+   /** Trusted referring site that can be used to reach CGI
+     * pages that aren't marked as harmful.
+     */
+   const char *trusted_cgi_referrer;
+
    /** Ports to bind to.  Defaults to HADDR_PORT == 8118. */
    int         hport[MAX_LISTENING_SOCKETS];
 
    /** Size limit for IOB */
    size_t buffer_limit;
+
+   /** Size of the receive buffer */
+   size_t receive_buffer_size;
+
+   /** Use accf_http(4) if available */
+   int enable_accept_filter;
+
+   /** Backlog passed to listen() */
+   int listen_backlog;
 
 #ifdef FEATURE_TRUST
 
@@ -1437,6 +1521,14 @@ struct configuration_spec
    struct pattern_spec *trust_list[MAX_TRUSTED_REFERRERS];
 
 #endif /* def FEATURE_TRUST */
+
+#ifdef FEATURE_CLIENT_TAGS
+   struct client_tag_spec client_tags[1];
+
+   /* Maximum number of seconds a temporarily enabled tag stays enabled. */
+   unsigned int client_tag_lifetime;
+#endif /* def FEATURE_CLIENT_TAGS */
+   int trust_x_forwarded_for;
 
 #ifdef FEATURE_ACL
 
@@ -1478,9 +1570,29 @@ struct configuration_spec
    /** List of loaders */
    int (*loaders[NLOADERS])(struct client_state *);
 
-};
+#ifdef FEATURE_HTTPS_INSPECTION
+   /** Password for proxy ca file **/
+   char *ca_password;
 
-extern int global_mode;
+   /** Directory with files of ca **/
+   char *ca_directory;
+
+   /** Filename of ca certificate **/
+   char *ca_cert_file;
+
+   /** Filename of ca key **/
+   char *ca_key_file;
+
+   /** Directory for saving certificates and keys for each webpage **/
+   char *certificate_directory;
+
+   /** Cipher list to use **/
+   char *cipher_list;
+
+   /** Filename of trusted CAs certificates **/
+   char *trusted_cas_file;
+#endif
+};
 
 /** Calculates the number of elements in an array, using sizeof. */
 #define SZ(X)  (sizeof(X) / sizeof(*X))
@@ -1502,7 +1614,7 @@ extern int global_mode;
  */
 
 /** URL for the Privoxy home page. */
-#define HOME_PAGE_URL     "http://www.privoxy.org/"
+#define HOME_PAGE_URL     "https://www.privoxy.org/"
 
 /** URL for the Privoxy user manual. */
 #define USER_MANUAL_URL   HOME_PAGE_URL VERSION "/user-manual/"
@@ -1530,7 +1642,13 @@ extern int global_mode;
  * The prefix for CGI pages.  Written out in generated HTML.
  * INCLUDES the trailing slash.
  */
+#ifdef FEATURE_HTTPS_INSPECTION
+#define CGI_PREFIX  "//" CGI_SITE_2_HOST CGI_SITE_2_PATH "/"
+#define CGI_PREFIX_HTTPS "https:" CGI_PREFIX
+#else
 #define CGI_PREFIX  "http://" CGI_SITE_2_HOST CGI_SITE_2_PATH "/"
+#endif
+#define CGI_PREFIX_HTTP  "http://" CGI_SITE_2_HOST CGI_SITE_2_PATH "/"
 
 #endif /* ndef PROJECT_H_INCLUDED */
 
